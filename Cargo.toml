@@ -1,0 +1,33 @@
+[package]
+name = "climate"
+version = "0.1.0"
+edition = "2024"
+description = "Run containerized CLI tools like they're installed natively, via a self-contained rootless engine"
+readme = "README.md"
+repository = "https://codeberg.org/gblach/climate"
+license = "GPL-3.0-or-later"
+keywords = ["cli", "container", "oci", "rootless", "sandbox"]
+categories = ["command-line-utilities", "virtualization"]
+
+[dependencies]
+anyhow = "1"
+argp = "0.4"
+dirs = "6"
+flate2 = "1"
+futures-util = "0.3"
+grit-lib = { version = "0.5", features = ["http-ureq"] }
+indicatif = "0.18"
+libc = "0.2"
+libcontainer = { version = "0.6", default-features = false, features = ["systemd", "v2"] }
+oci-client = { version = "0.17", default-features = false, features = ["rustls-tls"] }
+oci-spec = { version = "0.10", features = ["image", "runtime"] }
+rustix = { version = "1", features = ["net", "process", "pty", "termios"] }
+ruzstd = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+strum = { version = "0.28", features = ["derive"] }
+tar = "0.4"
+tokio = { version = "1", features = ["fs", "net", "rt", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+toml = "1"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

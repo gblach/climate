@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily refresh of downloaded climate images
+
+[Timer]
+OnCalendar=daily
+# Catch up a run missed while the machine was off.
+Persistent=true
+# Spread the registry load across machines.
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,31 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container: rust:latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [stable, beta, nightly]
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+
+      - name: Install the ${{ matrix.channel }} toolchain
+        run: rustup default ${{ matrix.channel }} && rustup component add clippy
+
+      - name: Print tool versions
+        run: |
+          rustc --version
+          cargo --version
+          cargo clippy --version
+
+      - name: Build (cargo check)
+        run: cargo check --release --locked --verbose
+
+      - name: Lint (clippy)
+        run: cargo clippy --verbose -- -D warnings
