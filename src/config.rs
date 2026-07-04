@@ -155,8 +155,24 @@ pub fn app_names() -> Vec<String> {
     app_names.into_iter().collect()
 }
 
+// App names become file names (`<name>.toml`) and symlink names, so restrict
+// them to a safe character set: names with path separators or a leading dot
+// could escape the search directories or hide files.
+fn validate_app_name(app_name: &str) -> Result<()> {
+    let valid = !app_name.is_empty()
+        && !app_name.starts_with('.')
+        && app_name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-');
+    if !valid {
+        bail!("invalid app name '{app_name}' (allowed: A-Z a-z 0-9 . _ -, not starting with '.')");
+    }
+    Ok(())
+}
+
 impl AppConfig {
     pub fn load(app_name: &str) -> Result<Self> {
+        validate_app_name(app_name)?;
         let filename = format!("{app_name}.toml");
         let path = search_dirs()
             .into_iter()
