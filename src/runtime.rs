@@ -14,6 +14,7 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::thread::JoinHandle;
 
 use crate::store;
@@ -172,6 +173,50 @@ fn wait(pid: Pid) -> Result<i32> {
     }
 }
 
+// The container init's pid, for forward_signal to relay to (0 = none yet).
+static CONTAINER_PID: AtomicI32 = AtomicI32::new(0);
+
+// A signal that arrived before the container init existed, replayed once the
+// pid is known.
+static PENDING_SIGNAL: AtomicI32 = AtomicI32::new(0);
+
+// Whether a signal was already forwarded to the container init.
+static FORWARDED: AtomicBool = AtomicBool::new(false);
+
+// Relay SIGINT/SIGTERM to the container init so it shuts down and wait()
+// returns, letting the normal teardown (delete container, unmount overlay,
+// remove bundle) run. Without this, a signal on a non-tty run kills this
+// process directly and leaks the fuse-overlayfs mount and the container
+// (a tty run is unaffected: the raw terminal turns Ctrl-C into pty bytes).
+// The init is PID 1 in its own PID namespace, so the kernel discards signals
+// it has no handler for; a repeated signal therefore escalates to SIGKILL,
+// which a namespaced init cannot ignore. Only async-signal-safe calls are
+// allowed here.
+extern "C" fn forward_signal(signum: libc::c_int) {
+    let pid = CONTAINER_PID.load(Ordering::Relaxed);
+    if pid > 0 {
+        let signum = match FORWARDED.swap(true, Ordering::Relaxed) {
+            true => libc::SIGKILL,
+            false => signum,
+        };
+        unsafe { libc::kill(pid, signum) };
+    } else {
+        PENDING_SIGNAL.store(signum, Ordering::Relaxed);
+    }
+}
+
+fn install_signal_forwarding() -> Result<()> {
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = forward_signal as *const () as usize;
+    for signum in [libc::SIGINT, libc::SIGTERM] {
+        if unsafe { libc::sigaction(signum, &action, std::ptr::null_mut()) } != 0 {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("installing the handler for signal {signum}"));
+        }
+    }
+    Ok(())
+}
+
 // Create the container from `spec`, run it to completion, and return its exit
 // code. When `tty` is set, youki gives the container a controlling pty and
 // returns its master over a console socket, which is copied to and from our
@@ -192,6 +237,7 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
     // exits, so the init is reparented. Becoming a subreaper makes it our child
     // again so we can wait on it.
     set_child_subreaper(Some(getpid())).context("becoming a child subreaper")?;
+    install_signal_forwarding()?;
 
     // For an interactive run, listen on the console socket before building so
     // the container's init can connect and hand back the pty master while it is
@@ -223,6 +269,14 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
         .context("container has no pid after create")?;
     let pid = Pid::from_raw(pid.as_raw()).context("container has an invalid pid")?;
 
+    // Publish the pid to the signal handler, then replay a signal that arrived
+    // while the container was still being created.
+    CONTAINER_PID.store(pid.as_raw_nonzero().get(), Ordering::Relaxed);
+    let pending = PENDING_SIGNAL.swap(0, Ordering::Relaxed);
+    if pending != 0 && !FORWARDED.swap(true, Ordering::Relaxed) {
+        unsafe { libc::kill(pid.as_raw_nonzero().get(), pending) };
+    }
+
     let result = (|| {
         container.start().context("starting the container")?;
         // Enter raw mode only now, once the container is built and started:
@@ -236,6 +290,10 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
         }
         Ok(code)
     })();
+
+    // The init is reaped, so its pid may be recycled: stop forwarding to it.
+    // Signals during the teardown below are absorbed so cleanup completes.
+    CONTAINER_PID.store(0, Ordering::Relaxed);
 
     let _ = container.delete(true);
     let _ = std::fs::remove_dir_all(&bundle);

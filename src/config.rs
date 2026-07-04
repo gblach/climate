@@ -163,9 +163,11 @@ fn validate_app_name(app_name: &str) -> Result<()> {
         && !app_name.starts_with('.')
         && app_name
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-');
+            .all(|b| b.is_ascii_alphanumeric() || b"+._-".contains(&b));
     if !valid {
-        bail!("invalid app name '{app_name}' (allowed: A-Z a-z 0-9 . _ -, not starting with '.')");
+        bail!(
+            "invalid app name '{app_name}' (allowed: A-Z a-z 0-9 + . _ -, not starting with '.')"
+        );
     }
     Ok(())
 }
