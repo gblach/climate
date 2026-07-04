@@ -136,6 +136,20 @@ fn drop_orphan_refs() -> Result<()> {
     Ok(())
 }
 
+// Whether the path is a current mount point according to /proc/self/mounts.
+// Mount points containing characters the kernel octal-escapes (space, tab,
+// newline, backslash) won't match, which only makes this conservative.
+fn is_mounted(path: &Path) -> bool {
+    let Ok(mounts) = fs::read_to_string("/proc/self/mounts") else {
+        return false;
+    };
+    let path = path.to_string_lossy();
+    mounts
+        .lines()
+        .filter_map(|line| line.split(' ').nth(1))
+        .any(|mount_point| mount_point == path)
+}
+
 // Reclaim the bundle, container state, and overlay mount of any run whose climate
 // process is gone (a SIGKILLed run). Runs whose climate process is still alive are
 // in progress and left untouched.
@@ -180,15 +194,22 @@ fn prune_runtime() -> Result<()> {
         if pid_of(&id, "").is_none_or(alive) {
             continue;
         }
+        // The fuse-overlayfs daemon may already be gone (killed, or the mount
+        // vanished with the run), leaving merged as a plain directory. Only a
+        // path that is still mounted needs fusermount3, and only a path that
+        // remains mounted after a failed unmount blocks removal; remove_dir_all
+        // failing with EBUSY backstops a stale mount table read.
         let merged = entry.path().join("merged");
-        let status = Command::new("fusermount3")
-            .arg("-u")
-            .arg(&merged)
-            .status()
-            .context("running fusermount3")?;
-        if !status.success() && merged.exists() {
-            eprintln!("fusermount3 failed to unmount {}", merged.display());
-            continue;
+        if is_mounted(&merged) {
+            let status = Command::new("fusermount3")
+                .arg("-u")
+                .arg(&merged)
+                .status()
+                .context("running fusermount3")?;
+            if !status.success() && is_mounted(&merged) {
+                eprintln!("fusermount3 failed to unmount {}", merged.display());
+                continue;
+            }
         }
         fs::remove_dir_all(entry.path()).with_context(|| format!("removing overlay {id}"))?;
         eprintln!("pruned overlay {id}");
