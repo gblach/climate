@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use oci_client::client::{ClientConfig, current_platform_resolver};
-use oci_client::manifest::OciDescriptor;
+use oci_client::manifest::{IMAGE_MANIFEST_MEDIA_TYPE, OCI_IMAGE_MEDIA_TYPE, OciDescriptor};
 use oci_client::secrets::RegistryAuth;
 use oci_client::{Client, Reference};
 use std::io::IsTerminal;
@@ -101,9 +101,18 @@ async fn fetch_image(client: &Client, reference: &Reference) -> Result<()> {
         .with_context(|| format!("resolving {reference}"))?;
 
     // Persist the manifest so a later run can resolve the image's layers and
-    // config from the store without contacting the registry.
-    let manifest_json = serde_json::to_vec(&manifest).context("encoding manifest")?;
-    store::write_blob(&manifest_digest, &manifest_json)?;
+    // config from the store without contacting the registry. The store needs
+    // the registry's exact bytes (a re-encoding would not hash to the digest),
+    // and the parse above discarded them - so fetch the manifest again, raw.
+    let (manifest_raw, _) = client
+        .pull_manifest_raw(
+            &reference.clone_with_digest(manifest_digest.clone()),
+            &auth,
+            &[OCI_IMAGE_MEDIA_TYPE, IMAGE_MANIFEST_MEDIA_TYPE],
+        )
+        .await
+        .with_context(|| format!("fetching the manifest blob for {reference}"))?;
+    store::write_blob(&manifest_digest, &manifest_raw)?;
 
     let multi = MultiProgress::with_draw_target(draw_target());
 
