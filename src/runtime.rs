@@ -4,13 +4,14 @@ use libcontainer::syscall::syscall::SyscallType;
 use oci_spec::runtime::Spec;
 use rustix::io::Errno;
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, recvmsg};
+use rustix::pipe::{PipeFlags, pipe_with};
 use rustix::process::{Pid, WaitOptions, getpid, set_child_subreaper};
 use rustix::termios::{
     OptionalActions, Termios, Winsize, tcgetattr, tcgetwinsize, tcsetattr, tcsetwinsize,
 };
 use std::fs::File;
 use std::io::{IoSliceMut, Read, Write};
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -217,6 +218,78 @@ fn install_signal_forwarding() -> Result<()> {
     Ok(())
 }
 
+// The write end of the resize self-pipe (-1 = none). notify_resize only writes
+// a byte here - the one async-signal-safe thing it can do - and the resize
+// thread does the actual window size copy.
+static RESIZE_PIPE: AtomicI32 = AtomicI32::new(-1);
+
+extern "C" fn notify_resize(_signum: libc::c_int) {
+    let fd = RESIZE_PIPE.load(Ordering::Relaxed);
+    if fd >= 0 {
+        unsafe { libc::write(fd, [0u8].as_ptr().cast(), 1) };
+    }
+}
+
+// Forwards terminal resizes (SIGWINCH) to the pty master for the duration of
+// an interactive run. Copying the real terminal's size onto the master also
+// delivers SIGWINCH to the container's foreground process group, so full-screen
+// apps redraw at the new size. Dropping this closes the pipe, ending the thread.
+struct ResizeForwarder {
+    pipe: Option<OwnedFd>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl ResizeForwarder {
+    fn install(master: &OwnedFd) -> Result<Self> {
+        let (read_end, write_end) =
+            pipe_with(PipeFlags::CLOEXEC).context("creating the resize pipe")?;
+        // The handler must never block, even if the pipe somehow fills up.
+        unsafe { libc::fcntl(write_end.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+        let master = master
+            .try_clone()
+            .context("duplicating the pty master for resizes")?;
+        let mut reader = File::from(read_end);
+        let thread = std::thread::spawn(move || {
+            let mut buf = [0u8; 64];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let _ = tcsetwinsize(&master, window_size());
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        action.sa_sigaction = notify_resize as *const () as usize;
+        if unsafe { libc::sigaction(libc::SIGWINCH, &action, std::ptr::null_mut()) } != 0 {
+            return Err(std::io::Error::last_os_error()).context("installing the SIGWINCH handler");
+        }
+        RESIZE_PIPE.store(write_end.as_raw_fd(), Ordering::Relaxed);
+
+        Ok(Self {
+            pipe: Some(write_end),
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for ResizeForwarder {
+    fn drop(&mut self) {
+        // Disarm the handler before closing its fd so it cannot write to a
+        // recycled descriptor.
+        unsafe { libc::signal(libc::SIGWINCH, libc::SIG_DFL) };
+        RESIZE_PIPE.store(-1, Ordering::Relaxed);
+        drop(self.pipe.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 // Create the container from `spec`, run it to completion, and return its exit
 // code. When `tty` is set, youki gives the container a controlling pty and
 // returns its master over a console socket, which is copied to and from our
@@ -283,6 +356,7 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
         // any creation diagnostics above still print with normal newlines, and
         // the terminal stays raw for the byte-copying below until this drops.
         let _raw = master.as_ref().map(|_| RawMode::enable()).transpose()?;
+        let _resize = master.as_ref().map(ResizeForwarder::install).transpose()?;
         let pump = master.as_ref().map(pump);
         let code = wait(pid)?;
         if let Some(reader) = pump {
