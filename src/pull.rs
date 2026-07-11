@@ -74,18 +74,22 @@ async fn fetch_layer(
     bar: ProgressBar,
 ) -> Result<()> {
     let temp = store::temp_path("layer")?;
-    download_blob(client, reference, layer, &temp, &bar).await?;
-    bar.finish_and_clear();
+    let result = async {
+        download_blob(client, reference, layer, &temp, &bar).await?;
+        bar.finish_and_clear();
 
-    let digest = layer.digest.clone();
-    let media_type = layer.media_type.clone();
-    let blob = temp.clone();
-    let extracted =
+        let digest = layer.digest.clone();
+        let media_type = layer.media_type.clone();
+        let blob = temp.clone();
         tokio::task::spawn_blocking(move || store::extract_layer(&blob, &digest, &media_type))
             .await
-            .context("layer extraction task panicked")?;
+            .context("layer extraction task panicked")?
+    }
+    .await;
+    // Remove the temp file on failure too, so an aborted download does not
+    // linger in the store root until the next successful pull sweeps it.
     let _ = std::fs::remove_file(&temp);
-    extracted
+    result
 }
 
 // Resolve the reference (narrowing a multi-arch index to the running OS/arch),

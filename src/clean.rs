@@ -39,19 +39,9 @@ fn alive(pid: i32) -> bool {
     !matches!(test_kill_process(pid), Err(Errno::SRCH))
 }
 
-// Reclaim store data no longer reachable from any recorded ref. Layers are
-// shared across images by digest, so a digest is only removed once no live ref
-// uses it; the per-pull caller and the `clean` command share this single pass.
-// Interrupted-pull temp files and extraction staging directories are swept too.
-pub fn gc_images() -> Result<()> {
-    let store = store::dir()?;
-    if !store.exists() {
-        return Ok(());
-    }
-
-    // The live set: every ref's manifest blob, the config it points at, and all
-    // its layers. A ref whose manifest is missing leaves the store inconsistent;
-    // bail rather than risk deleting layers we cannot prove are unused.
+// The live set: every ref's manifest blob, the config it points at, and all
+// its layers.
+fn live_set(store: &Path) -> Result<(HashSet<String>, HashSet<String>)> {
     let mut live_blobs = HashSet::new();
     let mut live_layers = HashSet::new();
     for entry in entries(&store.join("refs"))? {
@@ -70,6 +60,30 @@ pub fn gc_images() -> Result<()> {
             live_layers.insert(layer.digest.clone());
         }
     }
+    Ok((live_blobs, live_layers))
+}
+
+// Reclaim store data no longer reachable from any recorded ref. Layers are
+// shared across images by digest, so a digest is only removed once no live ref
+// uses it; the per-pull caller and the `clean` command share this single pass.
+// Interrupted-pull temp files and extraction staging directories are swept too.
+pub fn gc_images() -> Result<()> {
+    let store = store::dir()?;
+    if !store.exists() {
+        return Ok(());
+    }
+
+    // A ref whose manifest is missing or corrupt leaves the store inconsistent:
+    // nothing can be proven unused, so skip the deletion pass with a warning
+    // rather than fail the whole command. The caller's other passes (orphan-ref
+    // dropping, runtime pruning) are independent and may well cure the store.
+    let (live_blobs, live_layers) = match live_set(&store) {
+        Ok(live) => live,
+        Err(err) => {
+            eprintln!("skipping image GC: {err:#}");
+            return Ok(());
+        }
+    };
 
     for algo in entries(&store.join("blobs"))? {
         for blob in entries(&algo.path())? {

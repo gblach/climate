@@ -320,7 +320,7 @@ fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<()> {
 // (needs root), otherwise the per-user data directory.
 pub fn sync(system: bool) -> Result<()> {
     let target = if system {
-        PathBuf::from("/usr/share/climate/apps")
+        PathBuf::from(SYSTEM_DIR)
     } else {
         dirs::data_dir()
             .context("resolving the user data directory")?
