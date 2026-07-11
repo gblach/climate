@@ -212,6 +212,7 @@ impl AppConfig {
     // run the container to completion. Exits the process with the container's
     // exit code; only returns on a setup failure.
     pub fn run(&self, user_args: &[String]) -> Result<()> {
+        crate::spec::check_host_dir(&self.run)?;
         let image = crate::store::resolve(self)?;
         let mountpoints = crate::spec::mountpoints(self)?;
         let mount = crate::runtime::Mount::new(&image.layers, &mountpoints)?;

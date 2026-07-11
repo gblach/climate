@@ -119,6 +119,31 @@ fn host_dir(run: &RunConfig) -> Result<Option<PathBuf>> {
     })
 }
 
+// Guard against sharing far more of the host than a cwd mount is meant to:
+// from `/` the bind mount would cover the entire host filesystem read-write
+// (shadowing the image root), so refuse outright; from the home directory
+// itself everything in it (~/.ssh, keyrings, ...) becomes writable inside the
+// container, so warn. Subdirectories of home are the intended use and pass
+// silently; `run.cwd = false` opts out of the mount entirely.
+pub fn check_host_dir(run: &RunConfig) -> Result<()> {
+    let Some(dir) = host_dir(run)? else {
+        return Ok(());
+    };
+    if dir == Path::new("/") {
+        bail!(
+            "refusing to bind-mount / (the whole host filesystem) into the container; \
+             run from a working directory, or set run.cwd = false to share none"
+        );
+    }
+    if dirs::home_dir().is_some_and(|home| dir == home) {
+        eprintln!(
+            "warning: running from your home directory bind-mounts all of it \
+             read-write into the container"
+        );
+    }
+    Ok(())
+}
+
 // The host network files that exist and so should be bound in, or none unless
 // the app shares the host network.
 fn host_net_files(run: &RunConfig) -> Vec<PathBuf> {
