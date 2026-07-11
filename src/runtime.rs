@@ -154,7 +154,10 @@ fn pump(master: &OwnedFd) -> JoinHandle<()> {
 
 // Reap children until the container init exits, returning its exit code (128 +
 // signal number when it was killed). Intermediate and already-reparented
-// processes are reaped and ignored along the way.
+// processes are reaped and ignored along the way. Running out of children
+// before observing the init's status means that status was lost (reaped
+// elsewhere, or the init was never ours to wait on): an error, not a success,
+// so a failed app can never masquerade as exit code 0.
 fn wait(pid: Pid) -> Result<i32> {
     loop {
         match rustix::process::wait(WaitOptions::empty()) {
@@ -168,7 +171,7 @@ fn wait(pid: Pid) -> Result<i32> {
             }
             Ok(_) => continue,
             Err(Errno::INTR) => continue,
-            Err(Errno::CHILD) => return Ok(0),
+            Err(Errno::CHILD) => bail!("the container exited but its exit status was lost"),
             Err(err) => return Err(err).context("waiting for the container"),
         }
     }
