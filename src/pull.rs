@@ -199,7 +199,11 @@ pub fn ensure(cfg: &AppConfig, update: bool) -> Result<()> {
 // otherwise fetch the named app, erroring if its image is provided out of band
 // (`pull = false`).
 pub fn pull(update: bool, app: Option<&str>) -> Result<()> {
+    let mut failed = Vec::new();
+
     if update {
+        // One unreachable registry must not block the other apps or the GC
+        // below, so failures are reported per app and only fail the exit code.
         for app_name in app_names() {
             let Some(cfg) = AppConfig::load_or_warn(&app_name) else {
                 continue;
@@ -207,8 +211,11 @@ pub fn pull(update: bool, app: Option<&str>) -> Result<()> {
             let Ok(reference) = cfg.image.reference.parse::<Reference>() else {
                 continue;
             };
-            if store::has_ref(reference.whole().as_str())? {
-                ensure(&cfg, true)?;
+            if store::has_ref(reference.whole().as_str())?
+                && let Err(err) = ensure(&cfg, true)
+            {
+                eprintln!("{app_name}: {err:#}");
+                failed.push(app_name);
             }
         }
     } else {
@@ -221,5 +228,10 @@ pub fn pull(update: bool, app: Option<&str>) -> Result<()> {
     }
 
     // Reclaim the layers/config the just-pulled newer images superseded.
-    crate::clean::gc_images()
+    crate::clean::gc_images()?;
+
+    if !failed.is_empty() {
+        bail!("failed to update: {}", failed.join(", "));
+    }
+    Ok(())
 }
