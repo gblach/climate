@@ -1,6 +1,6 @@
 [package]
 name = "climate"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Run containerized CLI tools like they're installed natively, via a self-contained rootless engine"
 readme = "README.md"
