@@ -13,8 +13,11 @@ use std::path::Path;
 /// Run containerized CLI apps in a self-contained engine, mounting the current user in.
 #[derive(FromArgs)]
 struct Cli {
+    /// print the version and exit
+    #[argp(switch)]
+    version: bool,
     #[argp(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(FromArgs)]
@@ -184,7 +187,20 @@ fn main() -> Result<()> {
     }
 
     let cli: Cli = argp::parse_args_or_exit(argp::DEFAULT);
-    match cli.command {
+    if cli.version {
+        println!("climate {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    let Some(command) = cli.command else {
+        // Reparse with --help to obtain the same help message that argp
+        // prints for `climate --help`.
+        let Err(argp::EarlyExit::Help(help)) = Cli::from_args(&["climate"], &["--help"]) else {
+            unreachable!();
+        };
+        println!("{}", help.generate_default());
+        return Ok(());
+    };
+    match command {
         Command::Clean(_) => clean::clean()?,
         Command::List(_) => list()?,
         Command::Link(cmd) => link(&cmd)?,
