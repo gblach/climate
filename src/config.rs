@@ -33,7 +33,6 @@ pub struct AppConfig {
 #[derive(Debug, Deserialize)]
 pub struct AppMeta {
     pub name: String,
-    #[serde(default)]
     pub description: String,
     // SPDX license identifier of the main app.
     pub license: String,
@@ -197,6 +196,9 @@ impl AppConfig {
                 path.display(),
                 config.app.name,
             );
+        }
+        if config.app.description.is_empty() {
+            anyhow::bail!("{}: app description must not be empty", path.display());
         }
         if config.app.license.is_empty() {
             anyhow::bail!("{}: app license must not be empty", path.display());

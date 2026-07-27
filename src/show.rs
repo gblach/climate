@@ -64,11 +64,7 @@ pub fn show(app_name: &str, defaults: bool) -> Result<()> {
 
     println!("[app]");
     printer.key("name", config.app.name.into(), false);
-    printer.key(
-        "description",
-        config.app.description.into(),
-        absent("app", "description"),
-    );
+    printer.key("description", config.app.description.into(), false);
     printer.key("license", config.app.license.into(), false);
 
     println!("\n[image]");

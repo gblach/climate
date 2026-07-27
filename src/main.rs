@@ -153,19 +153,14 @@ fn list() -> Result<()> {
         .into_iter()
         .filter_map(|app_name| AppConfig::load_or_warn(&app_name))
         .collect();
-    // Pad the name column to the widest name that has a description to align.
+    // Pad the name column to the widest name to align the descriptions.
     let width = configs
         .iter()
-        .filter(|cfg| !cfg.app.description.is_empty())
         .map(|cfg| cfg.app.name.len())
         .max()
         .unwrap_or(0);
     for cfg in configs {
-        if cfg.app.description.is_empty() {
-            println!("{}", cfg.app.name);
-        } else {
-            println!("{:<width$}  {}", cfg.app.name, cfg.app.description);
-        }
+        println!("{:<width$}  {}", cfg.app.name, cfg.app.description);
     }
     Ok(())
 }
