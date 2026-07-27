@@ -71,6 +71,8 @@ an unrelated file unless you pass `-f`/`--force`.
 climate sync                    # download or update the app definitions
 climate sync -s | --system      # sync into the system directory (needs root)
 climate list                    # show available apps
+climate show <app>              # print an app definition, defaults included
+climate show -n | --no-defaults # print only the keys the definition states
 climate pull <app>              # fetch the image
 climate pull -u | --update      # refresh already-downloaded images
 climate run <app> [args...]     # run the app, forwarding args
@@ -117,6 +119,17 @@ To customize an app, copy its `*.toml` into a higher-precedence directory and ed
 ```sh
 cp ~/.local/share/climate/apps/ffmpeg.toml ~/.config/climate/apps/
 ```
+
+`climate show <app>` prints the definition that is actually in effect, with every key the
+file leaves out filled in from its default and grayed out. Redirecting the output drops the
+colors, so it doubles as a starting point for your own copy:
+
+```sh
+climate show ffmpeg > ~/.config/climate/apps/ffmpeg.toml
+```
+
+Pass `-n`/`--no-defaults` to leave the defaults out and print only what the definition
+itself states.
 
 You can also drop entirely new `*.toml` files into any of these directories. A definition
 in a higher-precedence directory overrides one of the same name below it.

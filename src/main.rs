@@ -2,6 +2,7 @@ mod clean;
 mod config;
 mod pull;
 mod runtime;
+mod show;
 mod spec;
 mod store;
 
@@ -28,6 +29,7 @@ enum Command {
     List(ListCmd),
     Pull(PullCmd),
     Run(RunCmd),
+    Show(ShowCmd),
     Sync(SyncCmd),
 }
 
@@ -78,6 +80,18 @@ struct RunCmd {
     /// --help) reach the app without needing a `--` separator.
     #[argp(positional, greedy)]
     cmd: Vec<String>,
+}
+
+/// Print an app definition in full, filling in the defaults of absent keys.
+#[derive(FromArgs)]
+#[argp(subcommand, name = "show")]
+struct ShowCmd {
+    /// print only the keys the definition states, omitting the defaults
+    #[argp(switch, short = 'n')]
+    no_defaults: bool,
+    /// app name
+    #[argp(positional)]
+    app: String,
 }
 
 /// Download the app definitions from the apps Git repo.
@@ -209,6 +223,7 @@ fn main() -> Result<()> {
             let (app_name, args) = cmd.cmd.split_first().context("run: missing app name")?;
             AppConfig::load(app_name)?.run(args)?;
         }
+        Command::Show(cmd) => show::show(&cmd.app, !cmd.no_defaults)?,
         Command::Sync(cmd) => config::sync(cmd.system)?,
     }
     Ok(())

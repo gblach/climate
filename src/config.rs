@@ -12,7 +12,7 @@ use grit_lib::transport::{ConnectOptions, Service, SshTransport, Transport, is_s
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const SYSTEM_DIR: &str = "/usr/share/climate/apps";
 
@@ -172,19 +172,25 @@ fn validate_app_name(app_name: &str) -> Result<()> {
     Ok(())
 }
 
+// Locate an app definition in the search directories and read it, returning the
+// path it was found at (for error messages) and its raw text.
+fn read(app_name: &str) -> Result<(PathBuf, String)> {
+    validate_app_name(app_name)?;
+    let filename = format!("{app_name}.toml");
+    let path = search_dirs()
+        .into_iter()
+        .map(|dir| dir.join(&filename))
+        .find(|path| path.is_file())
+        .with_context(|| format!("unknown app '{app_name}'"))?;
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    Ok((path, text))
+}
+
 impl AppConfig {
-    pub fn load(app_name: &str) -> Result<Self> {
-        validate_app_name(app_name)?;
-        let filename = format!("{app_name}.toml");
-        let path = search_dirs()
-            .into_iter()
-            .map(|dir| dir.join(&filename))
-            .find(|path| path.is_file())
-            .with_context(|| format!("unknown app '{app_name}'"))?;
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
+    fn parse(app_name: &str, path: &Path, text: &str) -> Result<Self> {
         let config: Self =
-            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+            toml::from_str(text).with_context(|| format!("parsing {}", path.display()))?;
         if config.app.name != app_name {
             anyhow::bail!(
                 "{}: app name '{}' does not match file name '{app_name}'",
@@ -196,6 +202,21 @@ impl AppConfig {
             anyhow::bail!("{}: app license must not be empty", path.display());
         }
         Ok(config)
+    }
+
+    pub fn load(app_name: &str) -> Result<Self> {
+        let (path, text) = read(app_name)?;
+        Self::parse(app_name, &path, &text)
+    }
+
+    // Load a definition together with its untyped form. Serde fills absent keys
+    // with their defaults, which leaves no way to tell those apart from keys
+    // the file states explicitly; the raw table keeps that information.
+    pub fn load_with_raw(app_name: &str) -> Result<(Self, toml::Table)> {
+        let (path, text) = read(app_name)?;
+        let config = Self::parse(app_name, &path, &text)?;
+        let raw = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        Ok((config, raw))
     }
 
     pub fn load_or_warn(app_name: &str) -> Option<Self> {
