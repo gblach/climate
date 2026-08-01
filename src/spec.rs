@@ -11,29 +11,30 @@ use std::path::{Path, PathBuf};
 use crate::config::{AppConfig, Entrypoint, Network, RunConfig};
 use crate::runtime::MountPoint;
 
-// The fallback search path for images whose config carries no PATH.
+// PATH used when the image itself does not define one.
 const DEFAULT_PATH: &str = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-// Writable scratch directories mounted as tmpfs over the read-only root.
+// Directories the app must be able to write to, with their permission mode. Each gets an in-memory
+// filesystem, as the root filesystem is read-only.
 const TMPFS_DIRS: [(&str, &str); 3] = [("/tmp", "1777"), ("/run", "0755"), ("/var/tmp", "1777")];
 
-// Default rootless-spec mount targets that land directly on the read-only root.
-// Minimal images may not contain them, so they are materialised in the stub.
-// Nested targets (/dev/pts, /sys/fs/cgroup, ...) are created by youki on the
-// writable /dev tmpfs or the /sys bind and need no stub entry.
+// Kernel filesystems every container gets. Minimal images often lack these directories, and nothing
+// can be mounted onto a directory that does not exist, so `mountpoints` creates them. Deeper paths
+// like /dev/pts land inside these.
 const DEFAULT_MOUNT_DIRS: [&str; 3] = ["/proc", "/dev", "/sys"];
 
-// Host files bind-mounted read-only when sharing the host network, so DNS and
-// host name resolution work as they do outside the container.
+// Host files shared read-only with containers that use the host network, so that DNS lookups behave
+// the same inside and outside the container.
 const HOST_NET_FILES: [&str; 2] = ["/etc/resolv.conf", "/etc/hosts"];
 
-// The argument that re-invokes this binary as a createContainer hook to bring
-// the container's loopback interface up.
+// Marker argument this binary passes to itself when the container runtime calls it to bring the
+// container's loopback interface up.
 pub const LOOPBACK_HOOK_ARG: &str = "__lo-up";
 
-// The argv to exec, following docker/podman semantics: a configured entrypoint
-// overrides the image's and drops its default command; otherwise the image
-// entrypoint is kept and its command is used only when no arguments are given.
+// Assemble the command line to run, following the same rules as docker and podman: an entrypoint
+// set by the app definition replaces both the image's entrypoint and its default command; otherwise
+// the image's entrypoint stays, and its default command is used only when the user passed no
+// arguments.
 fn command(run: &RunConfig, image: Option<&ImageExecConfig>, user_args: &[String]) -> Vec<String> {
     let extra: Vec<String> = run.args.iter().chain(user_args).cloned().collect();
     let mut argv = Vec::new();
@@ -59,9 +60,9 @@ fn command(run: &RunConfig, image: Option<&ImageExecConfig>, user_args: &[String
     argv
 }
 
-// The image's environment, then the app's entries layered on top: "NAME=VALUE"
-// is set literally, bare "NAME" is passed through from the host if present. A
-// default PATH is added when the image config carries none.
+// The environment for the container: the image's own variables first, then the app's on top.
+// "NAME=VALUE" is used as written, a bare "NAME" copies the value from the host if it is set there.
+// A PATH is added when neither supplies one.
 fn environment(run: &RunConfig, image: Option<&ImageExecConfig>) -> Vec<String> {
     let mut env: Vec<String> = image
         .and_then(|c| c.env().as_ref())
@@ -98,8 +99,8 @@ fn tmpfs(destination: &str, mode: &str) -> Result<Mount> {
 
 fn bind(source: &Path, destination: &Path, readonly: bool) -> Result<Mount> {
     let access = if readonly { "ro" } else { "rw" };
-    // Type "bind" (not "none") so youki creates a file target for a file source
-    // and a directory target otherwise; "none" always makes a directory.
+    // The type must be "bind", not "none": with "bind" youki creates a file as the mount target for
+    // a file source, while "none" always creates a directory.
     MountBuilder::default()
         .destination(destination.to_path_buf())
         .typ("bind")
@@ -109,8 +110,8 @@ fn bind(source: &Path, destination: &Path, readonly: bool) -> Result<Mount> {
         .with_context(|| format!("building bind mount for {}", destination.display()))
 }
 
-// The host directory bind-mounted into the container at the same path, or None
-// when the app opts out of sharing any host directory.
+// The host directory shared with the container under the same path, or None when the app shares
+// nothing.
 fn host_dir(run: &RunConfig) -> Result<Option<PathBuf>> {
     Ok(if run.cwd {
         Some(std::env::current_dir().context("resolving current directory")?)
@@ -119,12 +120,10 @@ fn host_dir(run: &RunConfig) -> Result<Option<PathBuf>> {
     })
 }
 
-// Guard against sharing far more of the host than a cwd mount is meant to:
-// from `/` the bind mount would cover the entire host filesystem read-write
-// (shadowing the image root), so refuse outright; from the home directory
-// itself everything in it (~/.ssh, keyrings, ...) becomes writable inside the
-// container, so warn. Subdirectories of home are the intended use and pass
-// silently; `run.cwd = false` opts out of the mount entirely.
+// Stop the working directory share from handing over far more than intended. Started from `/`, it
+// would share the whole host filesystem read-write and hide the image's own files, so refuse.
+// Started from the home directory, it would expose everything in it (~/.ssh, keyrings, ...)
+// read-write, so warn. Subdirectories of home are the normal case and pass without a word.
 pub fn check_host_dir(run: &RunConfig) -> Result<()> {
     let Some(dir) = host_dir(run)? else {
         return Ok(());
@@ -144,8 +143,8 @@ pub fn check_host_dir(run: &RunConfig) -> Result<()> {
     Ok(())
 }
 
-// The host network files that exist and so should be bound in, or none unless
-// the app shares the host network.
+// Which of the host's name resolution files to share. Nothing is shared unless the app uses the
+// host network, and a file that does not exist is skipped.
 fn host_net_files(run: &RunConfig) -> Vec<PathBuf> {
     if run.network != Network::Full {
         return Vec::new();
@@ -157,9 +156,9 @@ fn host_net_files(run: &RunConfig) -> Vec<PathBuf> {
         .collect()
 }
 
-// The mount targets the image is not guaranteed to contain, materialised in the
-// overlay stub so youki can mount over them without writing to the read-only
-// root. Mirrors the extra mounts added in `build`.
+// Every path something will be mounted onto. The image may not contain these directories, and the
+// container's root filesystem is read-only, so they are created in a separate stub layer. Keep in
+// step with the mounts in `build`.
 pub fn mountpoints(cfg: &AppConfig) -> Result<Vec<MountPoint>> {
     let run = &cfg.run;
     let mut points: Vec<MountPoint> = DEFAULT_MOUNT_DIRS
@@ -176,9 +175,9 @@ pub fn mountpoints(cfg: &AppConfig) -> Result<Vec<MountPoint>> {
     Ok(points)
 }
 
-// Build the OCI runtime spec for one run: a read-only overlay root, the merged
-// command/env/cwd, the rootless user/namespace setup, and the bind/tmpfs mounts
-// that make the current user's working directory available inside.
+// Build the description of one container run that the runtime consumes: the read-only root
+// filesystem, the command, environment and start directory, the user and isolation settings, and
+// the mounts.
 pub fn build(
     cfg: &AppConfig,
     image: &ImageConfiguration,
@@ -193,11 +192,10 @@ pub fn build(
 
     let mut spec = Spec::rootless(uid, gid);
 
-    // The root is a fuse-overlayfs merge with no upperdir, so it is already
-    // read-only (writes get EROFS). The OCI read-only flag is left off on
-    // purpose: it would make youki remount the root with MS_RDONLY, which a
-    // rootless user cannot do on a fuse mount (the kernel-locked nosuid/nodev
-    // flags cannot be cleared, giving EPERM), and the remount is redundant here.
+    // The root filesystem is a stack of image layers with no writable layer on top, so it already
+    // rejects every write. The spec's own read-only flag is deliberately left off: it would add
+    // nothing, and would make youki remount the root, which an unprivileged user cannot do on this
+    // kind of mount.
     spec.set_root(Some(
         RootBuilder::default()
             .path(root.to_path_buf())
@@ -213,8 +211,8 @@ pub fn build(
             cfg.app.name,
         );
     }
-    // With a host directory shared, run in the host cwd; otherwise fall back to
-    // the image's own workdir (or the root), since the host cwd is not mounted.
+    // Start in the shared working directory when there is one. Without it that path does not exist
+    // inside, so use the image's own directory, or /.
     let cwd = match host_dir(run)? {
         Some(_) => std::env::current_dir().context("resolving current directory")?,
         None => image_config
@@ -250,9 +248,9 @@ pub fn build(
         .clone()
         .expect("rootless spec has a linux object");
     match run.network {
-        // Rootless spec already omits the network namespace, sharing the host's.
+        // With no network namespace listed the container shares the host's.
         Network::Full => {}
-        // An isolated network namespace: only its own loopback, down by default.
+        // A private network namespace, holding only a disabled loopback.
         Network::None | Network::Localhost => {
             let mut namespaces = linux.namespaces().clone().unwrap_or_default();
             namespaces.push(
@@ -266,9 +264,9 @@ pub fn build(
     }
     spec.set_linux(Some(linux));
 
-    // The namespace's loopback starts down, so bring it up from a hook that runs
-    // inside the new network namespace (where we hold CAP_NET_ADMIN). The hook
-    // re-invokes this binary; see `bring_loopback_up`.
+    // The loopback interface has to be enabled from inside the new network namespace, which is
+    // where the runtime executes hooks. The hook runs this same binary again; see
+    // `bring_loopback_up`.
     if run.network == Network::Localhost {
         let exe = std::env::current_exe().context("resolving the climate executable")?;
         let hook = HookBuilder::default()
@@ -287,10 +285,10 @@ pub fn build(
     Ok(spec)
 }
 
-// Bring the container's own loopback interface up so localhost connections work.
-// Called from the createContainer hook, i.e. inside the new network namespace: a
-// fresh namespace's `lo` exists but starts down, and there it can be set up
-// without host privileges.
+// Enable the container's loopback interface so connections to 127.0.0.1 work. This runs as a
+// container hook, inside the container's own network namespace, where the interface exists but is
+// still disabled and where switching it on needs no privileges. The ioctl calls read its flags and
+// set the "up" bit.
 pub fn bring_loopback_up() -> Result<()> {
     let sock = socket(AddressFamily::INET, SocketType::DGRAM, None)
         .context("opening a socket to configure loopback")?;

@@ -22,16 +22,15 @@ fn network_value(network: &Network) -> toml::Value {
 }
 
 struct Printer {
-    // Whether to emit ANSI escapes. Dropped when stdout is not a terminal,
-    // leaving plain TOML that can be redirected.
+    // Whether to colour the output. Off when redirected, so a file gets plain TOML.
     color: bool,
-    // Whether to print the keys the file leaves out.
+    // Whether to include the keys the file leaves out.
     defaults: bool,
 }
 
 impl Printer {
-    // Print a line the file does not state, dimmed to set it apart from what
-    // the file says, or nothing at all when defaults are suppressed.
+    // Print a line the file does not contain, greyed out to set it apart, or nothing at all when
+    // defaults are hidden.
     fn defaulted(&self, line: String) {
         if !self.defaults {
             return;
@@ -71,13 +70,13 @@ pub fn show(app_name: &str, defaults: bool) -> Result<()> {
     printer.key("reference", config.image.reference.into(), false);
     printer.key("pull", config.image.pull.into(), absent("image", "pull"));
 
-    // Every key of [run] has a default, so the whole section can be suppressed;
-    // print its header only when something will follow it.
+    // Every key of [run] has a default, so with defaults hidden the section can end up empty. Print
+    // its header only if something will follow.
     if defaults || table("run").is_some_and(|table| !table.is_empty()) {
         println!("\n[run]");
     }
-    // An unset entrypoint is not a value the file could spell out: the image's
-    // own entrypoint runs. Say so in a comment rather than inventing a value.
+    // No value stands for "no entrypoint set"; it means the image's own entrypoint runs, so say
+    // that in a comment instead of inventing a default.
     match &config.run.entrypoint {
         Some(entrypoint) => printer.key("entrypoint", entrypoint_value(entrypoint), false),
         None => {

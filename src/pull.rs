@@ -11,11 +11,11 @@ use std::io::IsTerminal;
 use std::path::Path;
 use tokio_util::io::InspectWriter;
 
-// How many layer blobs to download at once, à la `docker pull`.
+// How many layers to download at once, the same number `docker pull` uses.
 const MAX_CONCURRENT_DOWNLOADS: usize = 3;
 
-// Where progress bars are drawn: stderr when interactive, hidden otherwise so
-// piped output stays clean.
+// Progress bars go to stderr when there is a terminal, and are switched off otherwise so that
+// redirected output stays clean.
 fn draw_target() -> ProgressDrawTarget {
     if std::io::stderr().is_terminal() {
         ProgressDrawTarget::stderr()
@@ -24,9 +24,9 @@ fn draw_target() -> ProgressDrawTarget {
     }
 }
 
-// A labelled, byte-sized progress bar for one blob download. It starts on a
-// hidden draw target so that styling it (which draws immediately) does not leak
-// a stray line; the caller's MultiProgress reassigns the target on `add`.
+// A labelled progress bar for one download, or a spinner when the size is not known. It starts
+// hidden because applying a style draws the bar straight away, which would leave a stray line;
+// adding it to the MultiProgress shows it.
 fn styled_bar(label: &str, size: i64) -> ProgressBar {
     let len = (size > 0).then_some(size as u64);
     let template = if len.is_some() {
@@ -44,8 +44,8 @@ fn styled_bar(label: &str, size: i64) -> ProgressBar {
     bar
 }
 
-// Stream a blob to `temp`, verifying its digest against the descriptor and
-// advancing `bar`. Used for the config and layer blobs.
+// Download one file to `temp` while updating `bar`. The client checks the content against the
+// digest the registry advertised.
 async fn download_blob(
     client: &Client,
     reference: &Reference,
@@ -56,7 +56,6 @@ async fn download_blob(
     let file = tokio::fs::File::create(temp)
         .await
         .with_context(|| format!("creating {}", temp.display()))?;
-    // Advance the progress bar by the bytes of each successful write.
     let writer = InspectWriter::new(file, |chunk: &[u8]| bar.inc(chunk.len() as u64));
     client
         .pull_blob(reference, descriptor, writer)
@@ -64,9 +63,8 @@ async fn download_blob(
         .with_context(|| format!("pulling blob {}", descriptor.digest))
 }
 
-// Download a layer to a temp file (advancing its own progress line), then
-// extract it into the store off-thread so it does not stall the other
-// concurrent downloads.
+// Download one layer, then unpack it into the store. Unpacking is CPU-bound, so it runs on a
+// separate thread where it cannot hold up the other downloads.
 async fn fetch_layer(
     client: &Client,
     reference: &Reference,
@@ -86,17 +84,16 @@ async fn fetch_layer(
             .context("layer extraction task panicked")?
     }
     .await;
-    // Remove the temp file on failure too, so an aborted download does not
-    // linger in the store root until the next successful pull sweeps it.
+    // Delete the temporary file on failure as well, so a broken download does not sit around until
+    // the next successful pull cleans it up.
     let _ = std::fs::remove_file(&temp);
     result
 }
 
-// Resolve the reference (narrowing a multi-arch index to the running OS/arch),
-// cache the config blob, and extract any layers not already in the store. Only
-// missing blobs are downloaded, so re-pulling an up-to-date image is cheap; a
-// newer image brings new layer digests, which are fetched and extracted. Layers
-// download concurrently, each on its own progress line.
+// Download an image: ask the registry which version matches this machine's OS and CPU architecture,
+// store its settings, and unpack the layers not already in the store. Since layers are identified
+// by their content, re-pulling an unchanged image downloads nothing and a newer one only the layers
+// that differ. Layers are fetched in parallel, each with its own progress bar.
 async fn fetch_image(client: &Client, reference: &Reference) -> Result<()> {
     let auth = RegistryAuth::Anonymous;
     let (manifest, manifest_digest) = client
@@ -104,10 +101,10 @@ async fn fetch_image(client: &Client, reference: &Reference) -> Result<()> {
         .await
         .with_context(|| format!("resolving {reference}"))?;
 
-    // Persist the manifest so a later run can resolve the image's layers and
-    // config from the store without contacting the registry. The store needs
-    // the registry's exact bytes (a re-encoding would not hash to the digest),
-    // and the parse above discarded them - so fetch the manifest again, raw.
+    // Keep the manifest, the list of the image's layers and settings, so later runs can look them
+    // up without contacting the registry. It must be stored exactly as the registry sent it, since
+    // writing the parsed form back out would no longer match the digest - and the call above parsed
+    // it away.
     let (manifest_raw, _) = client
         .pull_manifest_raw(
             &reference.clone_with_digest(manifest_digest.clone()),
@@ -120,7 +117,7 @@ async fn fetch_image(client: &Client, reference: &Reference) -> Result<()> {
 
     let multi = MultiProgress::with_draw_target(draw_target());
 
-    // The image config (entrypoint/cmd/env/workdir) is kept for the spec stage.
+    // The image's own settings, needed later to build the container.
     let config_digest = &manifest.config.digest;
     if !store::has_blob(config_digest)? {
         let temp = store::temp_path("config")?;
@@ -131,8 +128,7 @@ async fn fetch_image(client: &Client, reference: &Reference) -> Result<()> {
     }
 
     let layer_count = manifest.layers.len();
-    // Pad the index to the width of the total so every label is the same length
-    // and the bars stay column-aligned once the count reaches two digits.
+    // Pad the layer number to the width of the total so the bars stay lined up.
     let index_width = layer_count.to_string().len();
     let mut pending = Vec::new();
     for (index, layer) in manifest.layers.iter().enumerate() {
@@ -156,7 +152,7 @@ async fn fetch_image(client: &Client, reference: &Reference) -> Result<()> {
     }
 
     store::record_ref(reference.whole().as_str(), &manifest_digest)?;
-    // Status goes to stderr so it never mixes with a run's stdout.
+    // Status messages go to stderr so they never mix into an app's output.
     if fetched == 0 {
         eprintln!("up to date: {reference} ({manifest_digest})");
     } else {
@@ -165,11 +161,10 @@ async fn fetch_image(client: &Client, reference: &Reference) -> Result<()> {
     Ok(())
 }
 
-// Make the app's image available in the store. Apps with `pull = false`
-// provide their image out of band, so nothing is fetched. With `update`, the
-// registry is always re-checked; without it, an image already in the store is
-// left untouched (the run path uses this so a running app is reproducible).
-// Only anonymous (public) registry access is supported for now.
+// Get the app's image into the store. Apps with `pull = false` supply their image some other way,
+// so nothing is downloaded for them. With `update` the registry is contacted every time; without it
+// an image already in the store is left alone. Only public registries are supported for now - there
+// is no login.
 pub fn ensure(cfg: &AppConfig, update: bool) -> Result<()> {
     if !cfg.image.pull {
         return Ok(());
@@ -199,15 +194,14 @@ pub fn ensure(cfg: &AppConfig, update: bool) -> Result<()> {
     runtime.block_on(fetch_image(&client, &reference))
 }
 
-// Handle the `pull` command. With `update`, fetch every app pulled before;
-// otherwise fetch the named app, erroring if its image is provided out of band
-// (`pull = false`).
+// The `pull` command. With `update` it refreshes every app that was downloaded before; otherwise it
+// downloads the one app that was named.
 pub fn pull(update: bool, app: Option<&str>) -> Result<()> {
     let mut failed = Vec::new();
 
     if update {
-        // One unreachable registry must not block the other apps or the GC
-        // below, so failures are reported per app and only fail the exit code.
+        // One unreachable registry must not stop the remaining apps or the cleanup below, so
+        // failures are only collected and reported at the end.
         for app_name in app_names() {
             let Some(cfg) = AppConfig::load_or_warn(&app_name) else {
                 continue;
@@ -231,7 +225,7 @@ pub fn pull(update: bool, app: Option<&str>) -> Result<()> {
         ensure(&cfg, true)?;
     }
 
-    // Reclaim the layers/config the just-pulled newer images superseded.
+    // Free the disk space held by the image versions just replaced.
     crate::clean::gc_images()?;
 
     if !failed.is_empty() {

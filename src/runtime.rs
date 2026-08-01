@@ -20,17 +20,16 @@ use std::thread::JoinHandle;
 
 use crate::store;
 
-// Per-run state lives under $XDG_RUNTIME_DIR (falling back to the temp
-// directory), namespaced under climate. Runs create overlays/, bundles/, and
-// containers/ here; the `clean` command reclaims them, so the base must stay
-// the same on both sides - hence this single definition.
+// Scratch directory for running containers, under $XDG_RUNTIME_DIR or the temp directory. Each run
+// creates overlays/, bundles/ and containers/ here and the `clean` command removes them, so both
+// sides must agree on the location.
 pub fn runtime_dir() -> PathBuf {
     dirs::runtime_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("climate")
 }
 
-// The real terminal's window size, so the pty matches it (0s if unavailable).
+// The size of the user's terminal, so the container's can match it; 0s if unknown.
 fn window_size() -> Winsize {
     tcgetwinsize(std::io::stdin()).unwrap_or(Winsize {
         ws_row: 0,
@@ -40,8 +39,8 @@ fn window_size() -> Winsize {
     })
 }
 
-// Copy bytes until either side closes, treating a read error (e.g. EIO when the
-// pty peer is gone) as a clean end of stream.
+// Copy bytes from one stream to the other until either end closes. A read error - which is what a
+// closed terminal looks like - counts as a normal end.
 fn copy(mut from: impl Read, mut to: impl Write) {
     let mut buf = [0u8; 8192];
     loop {
@@ -58,8 +57,8 @@ fn copy(mut from: impl Read, mut to: impl Write) {
     }
 }
 
-// Puts the terminal into raw mode for the duration of the run and restores the
-// original settings on drop.
+// Switches the terminal to raw mode, where keystrokes are passed straight through instead of being
+// line-buffered, and restores it when dropped.
 struct RawMode {
     original: Termios,
 }
@@ -86,13 +85,15 @@ impl Drop for RawMode {
     }
 }
 
-// The console socket over which youki returns the master side of the pty it
-// creates inside the container. With the spec's process.terminal set, youki
-// makes that pty's slave the container's controlling terminal and wires the
-// app's stdio to it, so the line discipline turns Ctrl-C (and Ctrl-\, Ctrl-Z)
-// into signals delivered to the app - which a bare stdio dup cannot do. We
-// listen here, youki connects and sends the master fd while creating the
-// container, and we then copy bytes between that master and our real terminal.
+// A local socket used to receive a terminal from the container runtime.
+//
+// A pty is a pair of connected endpoints that behaves like a terminal: youki creates one inside the
+// container, hands the app one end as its terminal, and passes us the other. That is what makes
+// Ctrl-C and Ctrl-Z turn into signals for the app; handing it our own stdin and stdout would not.
+//
+// An open file cannot be returned through a normal API, so it comes over this socket: we listen,
+// youki connects while creating the container, and we then copy bytes between the endpoint it sent
+// and the real terminal.
 struct ConsoleSocket {
     listener: UnixListener,
     path: PathBuf,
@@ -110,9 +111,9 @@ impl ConsoleSocket {
         &self.path
     }
 
-    // Receive the pty master fd the container's init passed via SCM_RIGHTS.
-    // youki connects and sends during creation; the fd stays queued in the
-    // socket buffer, so accepting once the container is built is enough.
+    // Take our end of the container's terminal off the socket. youki sends it while the container
+    // is created, but it waits in the socket's buffer, so accepting the connection afterwards still
+    // finds it.
     fn into_master(self) -> Result<OwnedFd> {
         let (stream, _) = self
             .listener
@@ -137,9 +138,9 @@ impl ConsoleSocket {
     }
 }
 
-// Spawn the copy loops between the pty master and our real stdio: stdin ->
-// master (detached, ends when we exit) and master -> stdout (joined, ends when
-// the master sees EOF as the container exits).
+// Start the two threads that shuttle bytes between the container's terminal and ours. The input
+// thread runs until the process exits; the returned handle is the output thread's, which ends with
+// the container and is waited for so that no output is lost.
 fn pump(master: &OwnedFd) -> JoinHandle<()> {
     let writer = master
         .try_clone()
@@ -152,12 +153,10 @@ fn pump(master: &OwnedFd) -> JoinHandle<()> {
     std::thread::spawn(move || copy(File::from(reader), std::io::stdout()))
 }
 
-// Reap children until the container init exits, returning its exit code (128 +
-// signal number when it was killed). Intermediate and already-reparented
-// processes are reaped and ignored along the way. Running out of children
-// before observing the init's status means that status was lost (reaped
-// elsewhere, or the init was never ours to wait on): an error, not a success,
-// so a failed app can never masquerade as exit code 0.
+// Wait for the container's first process to finish and return its exit code, or 128 plus the signal
+// number if it was killed. Other children may finish first; they are collected and ignored. Running
+// out of children means that exit code is lost, which is an error, so a failed app can never look
+// like it succeeded.
 fn wait(pid: Pid) -> Result<i32> {
     loop {
         match rustix::process::wait(WaitOptions::empty()) {
@@ -177,25 +176,27 @@ fn wait(pid: Pid) -> Result<i32> {
     }
 }
 
-// The container init's pid, for forward_signal to relay to (0 = none yet).
+// Pid of the container's first process, read by the signal handler below (0 while there is none
+// yet).
 static CONTAINER_PID: AtomicI32 = AtomicI32::new(0);
 
-// A signal that arrived before the container init existed, replayed once the
-// pid is known.
+// A signal that arrived before that process existed, delivered once it does.
 static PENDING_SIGNAL: AtomicI32 = AtomicI32::new(0);
 
-// Whether a signal was already forwarded to the container init.
+// Whether a signal has already been passed on to the container.
 static FORWARDED: AtomicBool = AtomicBool::new(false);
 
-// Relay SIGINT/SIGTERM to the container init so it shuts down and wait()
-// returns, letting the normal teardown (delete container, unmount overlay,
-// remove bundle) run. Without this, a signal on a non-tty run kills this
-// process directly and leaks the fuse-overlayfs mount and the container
-// (a tty run is unaffected: the raw terminal turns Ctrl-C into pty bytes).
-// The init is PID 1 in its own PID namespace, so the kernel discards signals
-// it has no handler for; a repeated signal therefore escalates to SIGKILL,
-// which a namespaced init cannot ignore. Only async-signal-safe calls are
-// allowed here.
+// Pass Ctrl-C and `kill` (SIGINT/SIGTERM) on to the container instead of dying on the spot, so that
+// it shuts down, `wait` returns, and the usual cleanup - deleting the container, unmounting the
+// image, removing the bundle - still happens. Without this a signal during a non-interactive run
+// would leave both the mount and the container behind. (Interactive runs never get here: in raw
+// mode Ctrl-C is just a byte sent to the container's terminal.)
+//
+// The container's first process is PID 1 inside the container, and the kernel silently drops
+// signals that PID 1 has no handler for, so a second signal is upgraded to SIGKILL, which cannot be
+// ignored.
+//
+// Signal handlers may only call a small set of functions; these belong to it.
 extern "C" fn forward_signal(signum: libc::c_int) {
     let pid = CONTAINER_PID.load(Ordering::Relaxed);
     if pid > 0 {
@@ -221,9 +222,8 @@ fn install_signal_forwarding() -> Result<()> {
     Ok(())
 }
 
-// The write end of the resize self-pipe (-1 = none). notify_resize only writes
-// a byte here - the one async-signal-safe thing it can do - and the resize
-// thread does the actual window size copy.
+// Write end of a pipe to ourselves (-1 while there is none). A signal handler may not resize a
+// terminal, so it only writes one byte here and the thread reading the other end does the work.
 static RESIZE_PIPE: AtomicI32 = AtomicI32::new(-1);
 
 extern "C" fn notify_resize(_signum: libc::c_int) {
@@ -233,10 +233,10 @@ extern "C" fn notify_resize(_signum: libc::c_int) {
     }
 }
 
-// Forwards terminal resizes (SIGWINCH) to the pty master for the duration of
-// an interactive run. Copying the real terminal's size onto the master also
-// delivers SIGWINCH to the container's foreground process group, so full-screen
-// apps redraw at the new size. Dropping this closes the pipe, ending the thread.
+// Keeps the container's terminal the same size as the user's for as long as an interactive run
+// lasts. The kernel reports a resize with the SIGWINCH signal; copying the new size across makes it
+// send that same signal on to the app, which is how full-screen programs know to redraw. Dropping
+// this ends it.
 struct ResizeForwarder {
     pipe: Option<OwnedFd>,
     thread: Option<JoinHandle<()>>,
@@ -246,7 +246,7 @@ impl ResizeForwarder {
     fn install(master: &OwnedFd) -> Result<Self> {
         let (read_end, write_end) =
             pipe_with(PipeFlags::CLOEXEC).context("creating the resize pipe")?;
-        // The handler must never block, even if the pipe somehow fills up.
+        // Fail instead of blocking, so a full pipe cannot stall the handler.
         unsafe { libc::fcntl(write_end.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
         let master = master
             .try_clone()
@@ -282,8 +282,8 @@ impl ResizeForwarder {
 
 impl Drop for ResizeForwarder {
     fn drop(&mut self) {
-        // Disarm the handler before closing its fd so it cannot write to a
-        // recycled descriptor.
+        // Turn the handler off before closing the pipe, or a late signal could write to a
+        // descriptor number something else now owns.
         unsafe { libc::signal(libc::SIGWINCH, libc::SIG_DFL) };
         RESIZE_PIPE.store(-1, Ordering::Relaxed);
         drop(self.pipe.take());
@@ -293,11 +293,10 @@ impl Drop for ResizeForwarder {
     }
 }
 
-// Create the container from `spec`, run it to completion, and return its exit
-// code. When `tty` is set, youki gives the container a controlling pty and
-// returns its master over a console socket, which is copied to and from our
-// stdio; otherwise the container inherits this process's stdio. The bundle and
-// container state are removed before returning ("--rm" behaviour).
+// Create the container described by `spec`, run it until it finishes, and return its exit code.
+// With `tty` the container gets its own terminal, whose other end is copied to and from our stdin
+// and stdout; without it it uses this process's streams. Everything the run created is deleted
+// before returning.
 pub fn run(spec: Spec, tty: bool) -> Result<i32> {
     let base = runtime_dir();
     let id = format!("climate-{}", store::unique_id());
@@ -309,15 +308,14 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
     spec.save(bundle.join("config.json"))
         .context("writing the runtime spec")?;
 
-    // youki forks an intermediate process that forks the container init and
-    // exits, so the init is reparented. Becoming a subreaper makes it our child
-    // again so we can wait on it.
+    // youki starts the container through a helper process that exits at once, which detaches the
+    // container from us and would stop us waiting on it. Registering as a "subreaper" hands such
+    // orphans back to us, not to PID 1.
     set_child_subreaper(Some(getpid())).context("becoming a child subreaper")?;
     install_signal_forwarding()?;
 
-    // For an interactive run, listen on the console socket before building so
-    // the container's init can connect and hand back the pty master while it is
-    // being created.
+    // The socket must be listening before the container is built, because the container hands its
+    // terminal over while it is being created.
     let console = match tty {
         true => Some(ConsoleSocket::bind(&bundle)?),
         false => None,
@@ -336,8 +334,7 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
         .build()
         .context("creating the container")?;
 
-    // Receive the pty master the init sent over the console socket during
-    // creation; the container now holds the slave as its controlling terminal.
+    // Collect our end of the terminal the container sent while it was created.
     let master = console.map(ConsoleSocket::into_master).transpose()?;
 
     let pid = container
@@ -345,8 +342,8 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
         .context("container has no pid after create")?;
     let pid = Pid::from_raw(pid.as_raw()).context("container has an invalid pid")?;
 
-    // Publish the pid to the signal handler, then replay a signal that arrived
-    // while the container was still being created.
+    // Hand the pid to the signal handler, then deliver any signal that arrived while the container
+    // was still being created.
     CONTAINER_PID.store(pid.as_raw_nonzero().get(), Ordering::Relaxed);
     let pending = PENDING_SIGNAL.swap(0, Ordering::Relaxed);
     if pending != 0 && !FORWARDED.swap(true, Ordering::Relaxed) {
@@ -355,9 +352,8 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
 
     let result = (|| {
         container.start().context("starting the container")?;
-        // Enter raw mode only now, once the container is built and started:
-        // any creation diagnostics above still print with normal newlines, and
-        // the terminal stays raw for the byte-copying below until this drops.
+        // Switch to raw mode only now that the container has started, so any error message above
+        // still comes out with normal line breaks.
         let _raw = master.as_ref().map(|_| RawMode::enable()).transpose()?;
         let _resize = master.as_ref().map(ResizeForwarder::install).transpose()?;
         let pump = master.as_ref().map(pump);
@@ -368,8 +364,8 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
         Ok(code)
     })();
 
-    // The init is reaped, so its pid may be recycled: stop forwarding to it.
-    // Signals during the teardown below are absorbed so cleanup completes.
+    // The container is gone and its pid may be given to another process, so stop forwarding signals
+    // there. Signals arriving during the cleanup below are now swallowed, which lets it finish.
     CONTAINER_PID.store(0, Ordering::Relaxed);
 
     let _ = container.delete(true);
@@ -379,7 +375,7 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
     result
 }
 
-// An empty path to materialise in the stub lowerdir as a mount target.
+// An empty path to create in the stub layer for something to be mounted onto.
 pub struct MountPoint {
     path: PathBuf,
     is_file: bool,
@@ -401,9 +397,8 @@ impl MountPoint {
     }
 }
 
-// Create the stub lowerdir holding empty mount targets. Directories are created
-// outright; files get an empty regular file (with parent directories) so a file
-// bind mount has something to mount onto.
+// Build the stub layer. A directory mount needs an empty directory to mount onto and a file mount
+// an empty file, so each entry is created as its kind.
 fn materialise_stub(stub: &Path, mountpoints: &[MountPoint]) -> Result<()> {
     for point in mountpoints {
         let relative = point.path.strip_prefix("/").unwrap_or(&point.path);
@@ -422,7 +417,8 @@ fn materialise_stub(stub: &Path, mountpoints: &[MountPoint]) -> Result<()> {
     Ok(())
 }
 
-// A lowerdir path as a string, rejecting the ':' overlayfs uses as a separator.
+// A layer path as a string. Layer paths are passed to fuse-overlayfs as one ':'-separated list, so
+// a path containing ':' cannot be expressed.
 fn lowerdir_arg(path: &Path) -> Result<String> {
     let path = path
         .to_str()
@@ -433,17 +429,15 @@ fn lowerdir_arg(path: &Path) -> Result<String> {
     Ok(path.to_string())
 }
 
-// A unique, per-run overlay directory under the runtime directory.
+// A directory of this run's own, where the assembled root filesystem lives.
 fn run_dir() -> PathBuf {
     runtime_dir().join("overlays").join(store::unique_id())
 }
 
-// A read-only fuse-overlayfs mount of an image's extracted layers. There is no
-// upperdir, so the merged root rejects writes (EROFS): the container rootfs is
-// genuinely read-only and nothing is copied per run. The image layers are the
-// shared lowerdirs from the store; a small per-run stub lowerdir supplies the
-// empty mount targets (the working directory, /tmp, ...) that the image does not
-// already contain, so youki can mount over them without writing to the root.
+// The container's root filesystem: the image's layers stacked by fuse-overlayfs into one directory
+// tree. No writable layer is added, so the result rejects all writes and nothing has to be copied
+// per run. The layers come from the shared store; only the small stub layer with the missing mount
+// points is built here.
 pub struct Mount {
     dir: PathBuf,
     merged: PathBuf,
@@ -454,9 +448,9 @@ impl Mount {
         &self.merged
     }
 
-    // Mount the image's layers read-only. `layers` are the layer digests in OCI
-    // order (base first); overlayfs reads lowerdirs highest-priority first, so
-    // they are reversed and the stub is placed first of all.
+    // Stack the image's layers. `layers` lists them bottom-up, the way the image stores them, while
+    // fuse-overlayfs expects the topmost first, so the order is reversed. The stub goes above all
+    // of them.
     pub fn new(layers: &[String], mountpoints: &[MountPoint]) -> Result<Self> {
         if layers.is_empty() {
             bail!("image has no layers to mount");

@@ -3,9 +3,23 @@
 > Your CLI's new mate: run containerized command-line tools like they're installed natively. Think
 > Flatpak, but for the terminal.
 
-Each app is described by a TOML file that says how to fetch its image and how to run it. When
-an app bind-mounts a host directory (your working directory or your home), `climate` runs it as your
-own uid/gid at the same path, so the tool reads and writes those files with your ownership.
+Each app is described by a TOML file that says how to fetch its image and how to run it. When an app
+shares a directory from your computer (your working directory or your home), `climate` runs the tool
+as you, at the same path, so the files it reads and writes stay yours.
+
+## Requirements
+
+`climate` mounts image layers with `fuse-overlayfs` and unmounts them with `fusermount3`, so both
+have to be installed. `fusermount3` comes with `fuse3`, which every `fuse-overlayfs` package
+depends on:
+
+```sh
+sudo dnf install fuse-overlayfs      # Fedora
+sudo apt install fuse-overlayfs      # Debian, Ubuntu
+```
+
+Containers are managed through your systemd user session, so one has to be running (it provides
+the `dbus` session bus under `$XDG_RUNTIME_DIR`). A normal desktop or `ssh` login has one.
 
 ## Install
 
@@ -37,6 +51,9 @@ climate pull ffmpeg
 climate run ffmpeg -i clip.mov clip.mp4
 ```
 
+`climate run` downloads a missing image by itself, so `climate pull` is only needed when you want
+the image fetched ahead of time.
+
 You can run any app the same way:
 
 ```sh
@@ -62,8 +79,8 @@ climate link ffmpeg nmap      # link specific apps
 climate link --all            # link every available app
 ```
 
-Linking is idempotent (an existing correct symlink is left alone) and refuses to clobber
-an unrelated file unless you pass `-f`/`--force`.
+Linking again is harmless: a symlink that already points at the binary is left alone. Anything else
+in the way is never replaced unless you pass `-f`/`--force`.
 
 ## Commands
 
@@ -79,7 +96,7 @@ climate run <app> [args...]     # run the app, forwarding args
 climate link <app>...           # create symlink shortcuts
 climate link -a | --all         # link every available app
 climate link -f | --force       # replace existing files or symlinks
-climate clean                   # reclaim orphaned image data and stale runtime files
+climate clean                   # free the space of unused images, clean up after killed runs
 ```
 
 ## Automatic updates
@@ -114,6 +131,9 @@ App definitions are loaded at runtime from these directories, highest precedence
 `climate sync` only writes the synced apps (the data directory, or `/usr/share/climate/apps/`
 with `--system`); your own definitions in `~/.config/climate/apps/` are never touched by it.
 
+Set `$CLIMATE_APPS_DIR` to a directory of your own - a checkout you are working on, for example -
+and it is searched before all the others.
+
 To customize an app, copy its `*.toml` into a higher-precedence directory and edit it there:
 
 ```sh
@@ -137,10 +157,8 @@ in a higher-precedence directory overrides one of the same name below it.
 ## How it works
 
 `climate` is a self-contained container engine: it pulls an app's image, mounts the layers, and runs
-the container in-process. There is no `podman`, `crun`, or `skopeo` to install - `climate`
-is a single static binary. At runtime it needs two external programs, `fuse-overlayfs`
-and `fusermount3`, to mount image layers read-only, plus a systemd user session (a `dbus` session
-bus under `$XDG_RUNTIME_DIR`) to manage the container.
+the container in-process. There is no `podman`, `crun`, or `skopeo` to install - `climate` is a
+single binary, next to the `fuse-overlayfs` and `fusermount3` helpers listed under Requirements.
 
 Containers run rootless, as your own user and with no extra privileges:
 

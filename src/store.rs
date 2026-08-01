@@ -12,16 +12,15 @@ use std::path::{Path, PathBuf};
 use crate::config::AppConfig;
 use crate::pull;
 
-// Content-addressed store for image blobs and extracted layers, under
-// $XDG_DATA_HOME/climate/images (e.g. ~/.local/share/climate/images). It lives in the
-// data directory, not the cache, because `pull = false` images are provided out
-// of band and cannot be re-fetched.
+// Local storage for downloaded images, in ~/.local/share/climate/images. It is the data directory
+// rather than a cache because images marked `pull = false` come from elsewhere and could not be
+// downloaded again if they were dropped.
 //
-//   blobs/<algo>/<hex>     verified raw blob (the image config)
-//   layers/<algo>/<hex>/   layer tarball extracted into a lowerdir
+//   blobs/<algo>/<hex>     a downloaded file, e.g. a manifest or image config
+//   layers/<algo>/<hex>/   one layer, unpacked into a directory
 //
-// Everything is keyed by digest, so a layer shared between images is stored
-// once and reused.
+// Names come from the digest (checksum) of the content, so a layer shared by two images is stored
+// once and used by both.
 
 pub fn dir() -> Result<PathBuf> {
     Ok(dirs::data_dir()
@@ -30,8 +29,8 @@ pub fn dir() -> Result<PathBuf> {
         .join("images"))
 }
 
-// Split an OCI digest ("sha256:<hex>") into an "<algo>/<hex>" relative path,
-// rejecting anything that could escape the store.
+// Turn a digest ("sha256:<hex>") into the relative path "sha256/<hex>". Only letters and digits are
+// accepted, so a bad digest cannot point outside the store.
 fn digest_path(digest: &str) -> Result<PathBuf> {
     let (algo, hex) = digest
         .split_once(':')
@@ -43,8 +42,6 @@ fn digest_path(digest: &str) -> Result<PathBuf> {
     Ok(Path::new(algo).join(hex))
 }
 
-// Create the parent directory of a store path so a file or layer can be
-// written there.
 fn create_parent(path: &Path) -> Result<()> {
     let parent = path.parent().expect("store path has a parent");
     fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))
@@ -58,11 +55,10 @@ pub fn layer_path(digest: &str) -> Result<PathBuf> {
     Ok(dir()?.join("layers").join(digest_path(digest)?))
 }
 
-// Marker recording the manifest digest last pulled for an image reference,
-// under refs/. The reference's '/' (its only filesystem-unsafe character; the
-// rest of the OCI grammar is path-safe) is swapped for '+', which the grammar
-// never produces, so the mapping is injective. Its presence answers "has this
-// app been pulled before" without hitting the registry.
+// Path of the file under refs/ that records which version of an image was downloaded last. Its
+// existence answers "do we already have this image?" without asking the registry. The '/' of a
+// reference cannot appear in a file name and is replaced by '+', which references never contain, so
+// none collide.
 pub fn ref_marker(reference: &str) -> Result<PathBuf> {
     Ok(dir()?.join("refs").join(reference.replace('/', "+")))
 }
@@ -81,21 +77,20 @@ pub fn has_blob(digest: &str) -> Result<bool> {
     Ok(blob_path(digest)?.exists())
 }
 
-// Read a cached blob's bytes (the manifest or the image config).
 pub fn read_blob(digest: &str) -> Result<Vec<u8>> {
     let path = blob_path(digest)?;
     std::fs::read(&path).with_context(|| format!("reading blob {}", path.display()))
 }
 
-// Store bytes under their digest. Used for the manifest, whose JSON cannot be
-// streamed through the download path the layer/config blobs take.
+// Store bytes already held in memory. Used for the manifest, which arrives in one small response,
+// not through the streaming path layers and configs take.
 pub fn write_blob(digest: &str, bytes: &[u8]) -> Result<()> {
     let dest = blob_path(digest)?;
     create_parent(&dest)?;
     fs::write(&dest, bytes).with_context(|| format!("storing blob {digest}"))
 }
 
-// The manifest digest last recorded for a reference, or None if never pulled.
+// Which version of an image was downloaded last, or None if it never was.
 pub fn read_ref(reference: &str) -> Result<Option<String>> {
     let path = ref_marker(reference)?;
     match fs::read_to_string(&path) {
@@ -109,9 +104,9 @@ pub fn has_layer(digest: &str) -> Result<bool> {
     Ok(layer_path(digest)?.exists())
 }
 
-// A token unique across concurrent runs: this process's pid and a nanosecond
-// timestamp. It is embedded in runtime artifact names so `clean::pid_of` can
-// recover the owning pid and tell whether the run is still alive.
+// A name no other run will pick: this process's pid plus the current time in nanoseconds. It goes
+// into the names of the directories a run creates, so `clean::pid_of` can read the pid back and
+// check whether that run is alive.
 pub fn unique_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -120,26 +115,26 @@ pub fn unique_id() -> String {
     format!("{}-{nanos}", std::process::id())
 }
 
-// A unique temporary path inside the store, on the same filesystem as the
-// blob and layer directories so the final rename into place is atomic.
+// A temporary path for a download, inside the store so that it is on the same filesystem as its
+// final location: a rename within one filesystem happens in one step, so a half-written file is
+// never mistaken for a finished one.
 pub fn temp_path(tag: &str) -> Result<PathBuf> {
     let dir = dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     Ok(dir.join(format!(".download-{tag}-{}", unique_id())))
 }
 
-// Move an already-downloaded temp file into the content-addressed blob cache.
+// Move a finished download into its final place in the store.
 pub fn commit_blob(temp: &Path, digest: &str) -> Result<()> {
     let dest = blob_path(digest)?;
     create_parent(&dest)?;
     fs::rename(temp, &dest).with_context(|| format!("storing blob {digest}"))
 }
 
-// Remove a directory tree that may contain read-only directories. Extracted
-// layers preserve their image's permissions, which include directories without
-// owner write (e.g. mode 0555); a directory's entries cannot be unlinked until
-// it is writable, so grant the owner rwx top-down before removing. Symlinks are
-// not followed, so only real directories are touched.
+// Delete a directory tree that may contain read-only directories. Unpacked layers keep the
+// permissions the image gave them, and nothing can be deleted from a directory that is not
+// writable, so every directory is made writable first. Symlinks are not followed, so only real
+// directories are touched.
 pub fn remove_tree(path: &Path) -> Result<()> {
     fn grant_writable(dir: &Path) -> std::io::Result<()> {
         let mut perms = fs::symlink_metadata(dir)?.permissions();
@@ -164,10 +159,10 @@ pub fn remove_tree(path: &Path) -> Result<()> {
     fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))
 }
 
-// Extract a layer tarball (at `temp`) into its lowerdir, decompressing by media
-// type. OCI whiteouts (.wh.<name>, .wh..wh..opq) are left in place: fuse-overlayfs
-// reads them natively. The work is staged in a sibling temp directory and
-// renamed into place so an interrupted extraction never looks complete.
+// Unpack a downloaded layer into its own directory, decompressing it by media type. Layers mark
+// deleted files with special ".wh." entries; those are left alone, as fuse-overlayfs understands
+// them. Unpacking happens in a temporary directory that is renamed at the end, so a broken unpack
+// never looks finished.
 pub fn extract_layer(temp: &Path, digest: &str, media_type: &str) -> Result<()> {
     let dest = layer_path(digest)?;
     create_parent(&dest)?;
@@ -197,17 +192,16 @@ pub fn extract_layer(temp: &Path, digest: &str, media_type: &str) -> Result<()> 
     fs::rename(&staging, &dest).with_context(|| format!("finalising layer {digest}"))
 }
 
-// An image resolved from the local store: its layer digests in OCI order (base
-// first) and the parsed image config (entrypoint/cmd/env/workdir).
+// What a run needs from an image: the layers of its filesystem, bottom-up, and the settings it
+// ships with (the command, environment and working directory).
 pub struct Image {
     pub layers: Vec<String>,
     pub config: ImageConfiguration,
 }
 
-// Make the app's image available and read back what the run engine needs.
-// The image is fetched only when it is absent from the store; an image that is
-// already present is never updated here (use `pull` for that). `pull = false`
-// apps are provided out of band and require the image to be present already.
+// Make sure the app's image is in the store and read out what a run needs. An image already there
+// is used as it is, never refreshed - that is what `pull` is for. Apps with `pull = false` fail
+// here if their image is missing.
 pub fn resolve(cfg: &AppConfig) -> Result<Image> {
     let reference: Reference = cfg
         .image

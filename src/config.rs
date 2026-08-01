@@ -16,10 +16,10 @@ use std::path::{Path, PathBuf};
 
 const SYSTEM_DIR: &str = "/usr/share/climate/apps";
 
-// Default apps repository, overridable with $CLIMATE_APPS_URL.
+// Git repository holding the app definitions, overridable with $CLIMATE_APPS_URL.
 const DEFAULT_APPS_URL: &str = "https://github.com/gblach/climate-apps.git";
 
-// The fetch refspec mirroring every remote branch into a tracking ref.
+// Tells git to fetch every remote branch into refs/remotes/origin/.
 const FETCH_REFSPEC: &str = "+refs/heads/*:refs/remotes/origin/*";
 
 #[derive(Debug, Deserialize)]
@@ -34,22 +34,22 @@ pub struct AppConfig {
 pub struct AppMeta {
     pub name: String,
     pub description: String,
-    // SPDX license identifier of the main app.
+    // SPDX license identifier of the app itself, e.g. "MIT".
     pub license: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ImageConfig {
-    // Fully qualified reference, e.g. "quay.io/coreos/butane:release".
+    // Full image reference including registry and tag, e.g. "quay.io/coreos/butane:release".
     pub reference: String,
-    // When true (the default) pull newer images only; when false never pull,
-    // i.e. the image is built locally or provided out of band.
+    // Whether the image may be downloaded from its registry. Set to false for images that are built
+    // locally or installed by some other means.
     #[serde(default = "yes")]
     pub pull: bool,
 }
 
-// An image entrypoint override. A string is the single executable to run; a
-// list is the full argv. Either replaces the image's entrypoint.
+// Replacement for the program the image runs by default. A string names a single executable; a list
+// is the whole command line.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum Entrypoint {
@@ -57,11 +57,10 @@ pub enum Entrypoint {
     List(Vec<String>),
 }
 
-// The container's network access. `Full` shares the host network namespace, so
-// the app reaches the internet as the user would. The rest run in an isolated
-// network namespace: `None` (the default) has only a down loopback, i.e. no
-// connectivity at all; `Localhost` brings that loopback up so the app can talk
-// to itself over 127.0.0.1 but nothing else.
+// How much network the container gets. `Full` uses the host's own network, so the app reaches the
+// internet just like the user does. The other two give it a private, empty network: `None` (the
+// default) has no working interface at all, `Localhost` enables 127.0.0.1 only, so the app can talk
+// just to itself.
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Network {
@@ -71,28 +70,24 @@ pub enum Network {
     Localhost,
 }
 
-// How to run the image. By default the current working directory is mounted and
-// the container has no network; an app overrides either explicitly.
+// How to run the image. The defaults share the current working directory and give the container no
+// network; an app can override both.
 #[derive(Debug, Deserialize)]
 pub struct RunConfig {
-    // Override the image entrypoint.
     #[serde(default)]
     pub entrypoint: Option<Entrypoint>,
-    // Arguments placed after the entrypoint, before user-supplied ones.
+    // Arguments inserted after the entrypoint, before the ones the user typed.
     #[serde(default)]
     pub args: Vec<String>,
-    // Environment entries. Either "NAME" (pass through from host) or
-    // "NAME=VALUE" (set explicitly).
+    // Environment variables. "NAME" copies the value from the host, "NAME=VALUE" sets it outright.
     #[serde(default)]
     pub env: Vec<String>,
 
-    // Whether to bind-mount the current working directory into the container
-    // at the same path. When false, nothing is mounted and the image's own
-    // workdir is used.
+    // Whether the current working directory is shared with the container under the same path. When
+    // false nothing is shared and the container starts in the directory the image itself specifies.
     #[serde(default = "yes")]
     pub cwd: bool,
 
-    // Which network the container can reach.
     #[serde(default)]
     pub network: Network,
 }
@@ -113,11 +108,10 @@ fn yes() -> bool {
     true
 }
 
-// Directories searched for definitions, highest precedence first:
-// the override directory ($CLIMATE_APPS_DIR) when set,
-// user-authored config ($XDG_CONFIG_HOME/climate/apps or ~/.config/climate/apps),
-// the synced apps ($XDG_DATA_HOME/climate/apps or ~/.local/share/climate/apps),
-// then the system directory (/usr/share/climate/apps).
+// Directories searched for app definitions; the first match wins: the override directory
+// ($CLIMATE_APPS_DIR) when set, definitions written by the user (~/.config/climate/apps),
+// definitions downloaded by `climate sync` (~/.local/share/climate/apps), then the system-wide ones
+// (/usr/share/climate/apps).
 fn search_dirs() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(apps_dir) = std::env::var_os("CLIMATE_APPS_DIR") {
@@ -133,8 +127,8 @@ fn search_dirs() -> Vec<PathBuf> {
     paths
 }
 
-// Names of all available app definitions (TOML file stems), sorted and
-// deduplicated across all search directories.
+// Names of all available apps, taken from the TOML file names. The BTreeSet sorts them and drops
+// duplicates when an app exists in several directories.
 pub fn app_names() -> Vec<String> {
     let mut app_names = BTreeSet::new();
     for dir in search_dirs() {
@@ -154,9 +148,9 @@ pub fn app_names() -> Vec<String> {
     app_names.into_iter().collect()
 }
 
-// App names become file names (`<name>.toml`) and symlink names, so restrict
-// them to a safe character set: names with path separators or a leading dot
-// could escape the search directories or hide files.
+// App names end up as file names (`<name>.toml`) and as symlink names, so only harmless characters
+// are allowed. A name containing '/' could point outside the search directories, and one starting
+// with '.' would create a hidden file.
 fn validate_app_name(app_name: &str) -> Result<()> {
     let valid = !app_name.is_empty()
         && !app_name.starts_with('.')
@@ -171,8 +165,8 @@ fn validate_app_name(app_name: &str) -> Result<()> {
     Ok(())
 }
 
-// Locate an app definition in the search directories and read it, returning the
-// path it was found at (for error messages) and its raw text.
+// Find an app definition in the search directories and read it. The path is returned alongside the
+// text so error messages can name the file.
 fn read(app_name: &str) -> Result<(PathBuf, String)> {
     validate_app_name(app_name)?;
     let filename = format!("{app_name}.toml");
@@ -211,9 +205,9 @@ impl AppConfig {
         Self::parse(app_name, &path, &text)
     }
 
-    // Load a definition together with its untyped form. Serde fills absent keys
-    // with their defaults, which leaves no way to tell those apart from keys
-    // the file states explicitly; the raw table keeps that information.
+    // Load a definition twice: once into the struct, once as a plain TOML table. The struct fills
+    // in defaults for missing keys, so only the table still shows which keys the file itself
+    // states.
     pub fn load_with_raw(app_name: &str) -> Result<(Self, toml::Table)> {
         let (path, text) = read(app_name)?;
         let config = Self::parse(app_name, &path, &text)?;
@@ -231,24 +225,24 @@ impl AppConfig {
         }
     }
 
-    // Pull (if needed), mount the image's layers, build the runtime spec, and
-    // run the container to completion. Exits the process with the container's
-    // exit code; only returns on a setup failure.
+    // Download the image if it is missing, stack its layers into a root filesystem, describe the
+    // container, and run it. Ends this process with the container's exit code, so it only returns
+    // when the setup fails.
     pub fn run(&self, user_args: &[String]) -> Result<()> {
         crate::spec::check_host_dir(&self.run)?;
         let image = crate::store::resolve(self)?;
         let mountpoints = crate::spec::mountpoints(self)?;
         let mount = crate::runtime::Mount::new(&image.layers, &mountpoints)?;
 
-        // Run as the host uid:gid, mapped to container root, so files written
-        // through the bind mount keep the user's ownership.
+        // Inside the container the app appears to run as root, but the kernel maps that back to the
+        // real user, so files it writes into the shared directory stay owned by that user.
         let (uid, gid) = (
             rustix::process::getuid().as_raw(),
             rustix::process::getgid().as_raw(),
         );
-        // Allocate a pty only for a fully interactive session: every standard
-        // stream must be a terminal. If any is redirected, the container
-        // inherits the real fds so programs detect that and emit plain output.
+        // Give the app a terminal only when all three standard streams really are one. If any of
+        // them is piped or redirected, the container gets them as they are, so the app notices and
+        // prints plain output.
         let tty = std::io::stdin().is_terminal()
             && std::io::stdout().is_terminal()
             && std::io::stderr().is_terminal();
@@ -256,16 +250,15 @@ impl AppConfig {
         let spec = crate::spec::build(self, &image.config, mount.root(), user_args, uid, gid, tty)?;
         let code = crate::runtime::run(spec, tty)?;
 
-        // Drop the overlay mount before exiting so it is unmounted.
+        // Dropping the mount unmounts it; process::exit below would skip that.
         drop(mount);
         std::process::exit(code);
     }
 }
 
-// Shallow-fetch the apps repo, dispatching on the URL scheme. ssh runs the
-// streaming upload-pack over an ssh subprocess (like git, honouring
-// $GIT_SSH_COMMAND); http(s) runs the stateless smart-HTTP RPC through the
-// bundled ureq client (rustls TLS). Both request protocol v2.
+// Download the apps repository. An ssh URL talks to the server through an ssh subprocess, the way
+// git does (so $GIT_SSH_COMMAND applies); an http(s) URL uses the built-in HTTP client. Both speak
+// version 2 of the git protocol.
 fn fetch(repo: &Repository, url: &str, opts: &FetchOptions) -> Result<FetchOutcome> {
     if is_ssh_url(url) {
         let conn_opts = ConnectOptions {
@@ -286,7 +279,8 @@ fn fetch(repo: &Repository, url: &str, opts: &FetchOptions) -> Result<FetchOutco
     }
 }
 
-// Shallow-fetch the apps repo and reset HEAD and the worktree to the fetched tip.
+// Fetch the newest commit of the apps repository (depth 1, so no history is downloaded) and update
+// the checked-out files to match it.
 fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<()> {
     let opts = FetchOptions {
         refspecs: vec![FETCH_REFSPEC.to_string()],
@@ -298,8 +292,7 @@ fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<()> {
         bail!("the apps remote {url} advertised no branches (does it exist and is it accessible?)");
     }
 
-    // Resolve the fetched tip from the tracking ref the remote's default branch
-    // mapped to.
+    // Look up the commit the remote's default branch now points at.
     let branch = outcome
         .default_branch
         .context("the apps remote advertised no default branch")?;
@@ -311,9 +304,8 @@ fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<()> {
         .and_then(|u| u.new_oid)
         .with_context(|| format!("fetch did not update {tracking}"))?;
 
-    // Resolve the tree currently checked out (the old branch tip, if any) so the
-    // checkout below diffs against it; a fresh clone has no branch yet, so the
-    // diff is from an empty tree.
+    // The file listing of the commit checked out now, for the checkout below to compare against. A
+    // fresh clone has no local branch and nothing to compare.
     let local_branch = format!("refs/heads/{branch}");
     let from_tree = match resolve_ref(&repo.git_dir, &local_branch) {
         Ok(old_tip) => {
@@ -324,23 +316,22 @@ fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<()> {
         Err(_) => None,
     };
 
-    // Fast-forward the local branch and point HEAD at it.
+    // Move the local branch to the fetched commit and check that branch out.
     write_symbolic_ref(&repo.git_dir, "HEAD", &local_branch).context("setting HEAD")?;
     write_ref(&repo.git_dir, &local_branch, &tip)
         .with_context(|| format!("updating {local_branch}"))?;
 
-    // Diff the old tree against the fetched one so files removed upstream are
-    // deleted from the worktree, not just additions and updates applied.
+    // Comparing the two file listings, rather than just unpacking the new one, means apps deleted
+    // upstream are also deleted locally.
     let commit = parse_commit(&repo.odb.read(&tip)?.data).context("reading the fetched commit")?;
     checkout_between_trees(repo, from_tree.as_ref(), &commit.tree)
         .context("checking out the fetched files")?;
     Ok(())
 }
 
-// Sync the app definitions into the definition directory. On first run
-// the apps repo is shallow-cloned; on later runs the existing clone is fetched
-// and the worktree updated. With `--system` the target is the system directory
-// (needs root), otherwise the per-user data directory.
+// Download the app definitions: the first run clones the repository, later runs update it.
+// `--system` writes to the system-wide directory, which needs root, otherwise they go to the user's
+// data directory.
 pub fn sync(system: bool) -> Result<()> {
     let target = if system {
         PathBuf::from(SYSTEM_DIR)
@@ -355,7 +346,7 @@ pub fn sync(system: bool) -> Result<()> {
     if git_dir.is_dir() {
         let repo = Repository::open(&git_dir, Some(&target))
             .with_context(|| format!("opening {}", target.display()))?;
-        // grit-lib has no remote abstraction, so read the URL from config.
+        // grit-lib offers no remote API, so read the URL out of the git config.
         let cfg = ConfigSet::load(Some(&git_dir), false).context("reading repository config")?;
         let url = cfg
             .get("remote.origin.url")
@@ -375,8 +366,8 @@ pub fn sync(system: bool) -> Result<()> {
         let url =
             std::env::var("CLIMATE_APPS_URL").unwrap_or_else(|_| DEFAULT_APPS_URL.to_string());
 
-        // Init the repo and record the remote so later pulls find the URL and
-        // refspec; grit-lib has no one-shot clone to do this for us.
+        // grit-lib has no single clone call, so create the repository by hand and store the remote
+        // URL and refspec that later syncs read back.
         let repo = init_repository(&target, false, "main", None, "files")
             .with_context(|| format!("initializing {}", target.display()))?;
         let mut cfg = ConfigFile::from_path(&git_dir.join("config"), ConfigScope::Local)

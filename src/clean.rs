@@ -12,8 +12,8 @@ use std::process::Command;
 use crate::config::{AppConfig, app_names};
 use crate::store;
 
-// Directory entries, treating a missing directory as empty so callers can walk
-// store and runtime subdirectories that may not exist yet.
+// List a directory's entries, treating a missing directory as empty: the store and runtime
+// subdirectories are only created when they are first needed.
 fn entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
     match fs::read_dir(dir) {
         Ok(reader) => reader
@@ -24,14 +24,14 @@ fn entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
     }
 }
 
-// The climate process pid encoded in a runtime artifact name. Container and bundle
-// ids are "climate-<pid>-<nanos>"; overlay dirs are "<pid>-<nanos>" (empty prefix).
+// Read the pid of the climate process that created a runtime directory out of its name:
+// "climate-<pid>-<nanos>", or "<pid>-<nanos>" for overlay directories.
 fn pid_of(name: &str, prefix: &str) -> Option<i32> {
     name.strip_prefix(prefix)?.split('-').next()?.parse().ok()
 }
 
-// Whether a process with this pid still exists. Signal 0 probes without
-// delivering anything; only ESRCH means the process is gone.
+// Whether a process with this pid still exists. Signal 0 delivers nothing and only reports whether
+// the process could be signalled at all.
 fn alive(pid: i32) -> bool {
     let Some(pid) = Pid::from_raw(pid) else {
         return false;
@@ -39,8 +39,8 @@ fn alive(pid: i32) -> bool {
     !matches!(test_kill_process(pid), Err(Errno::SRCH))
 }
 
-// The live set: every ref's manifest blob, the config it points at, and all
-// its layers.
+// Everything in the store still in use: for each downloaded image its manifest, the settings it
+// points at, and its layers. The rest can be deleted.
 fn live_set(store: &Path) -> Result<(HashSet<String>, HashSet<String>)> {
     let mut live_blobs = HashSet::new();
     let mut live_layers = HashSet::new();
@@ -63,20 +63,18 @@ fn live_set(store: &Path) -> Result<(HashSet<String>, HashSet<String>)> {
     Ok((live_blobs, live_layers))
 }
 
-// Reclaim store data no longer reachable from any recorded ref. Layers are
-// shared across images by digest, so a digest is only removed once no live ref
-// uses it; the per-pull caller and the `clean` command share this single pass.
-// Interrupted-pull temp files and extraction staging directories are swept too.
+// Delete everything in the store that no downloaded image refers to any more. Because images share
+// layers, a layer is deleted only once no image needs it. Leftovers from interrupted downloads and
+// unpacks are swept up as well.
 pub fn gc_images() -> Result<()> {
     let store = store::dir()?;
     if !store.exists() {
         return Ok(());
     }
 
-    // A ref whose manifest is missing or corrupt leaves the store inconsistent:
-    // nothing can be proven unused, so skip the deletion pass with a warning
-    // rather than fail the whole command. The caller's other passes (orphan-ref
-    // dropping, runtime pruning) are independent and may well cure the store.
+    // If a manifest is missing or damaged we cannot tell what is still in use, and deleting on a
+    // guess could destroy a good image. So warn and skip the deletions; the other clean-up steps
+    // are independent and may repair this.
     let (live_blobs, live_layers) = match live_set(&store) {
         Ok(live) => live,
         Err(err) => {
@@ -102,7 +100,7 @@ pub fn gc_images() -> Result<()> {
         for layer in entries(&algo.path())? {
             let name = layer.file_name();
             let name = name.to_string_lossy();
-            // ".extract-<hex>" is staging left by an interrupted extraction.
+            // ".extract-<hex>" is a half-unpacked layer from a run that died.
             let digest = format!("{}:{name}", algo.file_name().display());
             if name.starts_with(".extract-") || !live_layers.contains(&digest) {
                 store::remove_tree(&layer.path())?;
@@ -110,7 +108,7 @@ pub fn gc_images() -> Result<()> {
         }
     }
 
-    // ".download-*" are partial downloads left in the store root by an aborted pull.
+    // ".download-*" are half-finished downloads from an interrupted pull.
     for entry in entries(&store)? {
         if entry
             .file_name()
@@ -125,9 +123,9 @@ pub fn gc_images() -> Result<()> {
     Ok(())
 }
 
-// Remove ref markers for images whose app is no longer in the apps repo. The
-// marker keeps an image reachable, so dropping it lets the following GC reclaim
-// the image. A marker's file name is the reference with '/' swapped for '+'.
+// Forget images whose app no longer exists. As long as the record under refs/ is there the image
+// counts as in use, so removing it is what lets the pass above delete the image data. The file name
+// is the reference, with '/' as '+'.
 fn drop_orphan_refs() -> Result<()> {
     let mut live = HashSet::new();
     for app_name in app_names() {
@@ -150,9 +148,9 @@ fn drop_orphan_refs() -> Result<()> {
     Ok(())
 }
 
-// Whether the path is a current mount point according to /proc/self/mounts.
-// Mount points containing characters the kernel octal-escapes (space, tab,
-// newline, backslash) won't match, which only makes this conservative.
+// Whether something is currently mounted at this path, according to the list of mounts the kernel
+// exposes in /proc. Paths containing a space, tab, newline or backslash appear escaped there and
+// never match, which only makes this cautious.
 fn is_mounted(path: &Path) -> bool {
     let Ok(mounts) = fs::read_to_string("/proc/self/mounts") else {
         return false;
@@ -164,15 +162,13 @@ fn is_mounted(path: &Path) -> bool {
         .any(|mount_point| mount_point == path)
 }
 
-// Reclaim the bundle, container state, and overlay mount of any run whose climate
-// process is gone (a SIGKILLed run). Runs whose climate process is still alive are
-// in progress and left untouched.
+// Clean up after runs whose climate process no longer exists, which happens when a run is killed
+// outright. Runs still alive are in progress and left alone.
 fn prune_runtime() -> Result<()> {
     let base = crate::runtime::runtime_dir();
 
-    // Containers first: a killed run's container init reparents to PID 1 and
-    // keeps running, pinning the overlay mount. Deleting the container (force)
-    // kills those processes and removes its cgroup/systemd scope and state.
+    // Containers come first: a killed run's container keeps running and holds the mounted image in
+    // use. Deleting it with force stops its processes.
     for entry in entries(&base.join("containers"))? {
         let id = entry.file_name().to_string_lossy().into_owned();
         let Some(pid) = pid_of(&id, "climate-") else {
@@ -208,11 +204,10 @@ fn prune_runtime() -> Result<()> {
         if pid_of(&id, "").is_none_or(alive) {
             continue;
         }
-        // The fuse-overlayfs daemon may already be gone (killed, or the mount
-        // vanished with the run), leaving merged as a plain directory. Only a
-        // path that is still mounted needs fusermount3, and only a path that
-        // remains mounted after a failed unmount blocks removal; remove_dir_all
-        // failing with EBUSY backstops a stale mount table read.
+        // The fuse-overlayfs process may already be gone, leaving an ordinary empty directory that
+        // needs no unmounting. Only a path that is still mounted after a failed attempt really
+        // blocks removal - and if the mount list was out of date, the removal below fails and
+        // reports it.
         let merged = entry.path().join("merged");
         if is_mounted(&merged) {
             let status = Command::new("fusermount3")
@@ -232,8 +227,8 @@ fn prune_runtime() -> Result<()> {
     Ok(())
 }
 
-// The `clean` command: drop refs of removed apps, garbage-collect unreachable
-// image data, and prune the runtime files of killed containers.
+// The `clean` command: forget images of apps that are gone, delete image data nothing uses any
+// more, and clean up after killed runs.
 pub fn clean() -> Result<()> {
     drop_orphan_refs()?;
     gc_images()?;

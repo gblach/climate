@@ -11,7 +11,7 @@ use argp::FromArgs;
 use config::{AppConfig, app_names};
 use std::path::Path;
 
-/// Run containerized CLI apps in a self-contained engine, mounting the current user in.
+/// Run containerized command-line tools as if they were installed on your system.
 #[derive(FromArgs)]
 struct Cli {
     /// print the version and exit
@@ -33,13 +33,13 @@ enum Command {
     Sync(SyncCmd),
 }
 
-/// Reclaim orphaned image data and the runtime files of killed containers.
+/// Free the disk space of images no app needs any more, and clean up after killed runs.
 #[derive(FromArgs)]
 #[argp(subcommand, name = "clean")]
 struct CleanCmd {}
 
-/// Create symlinks next to the climate binary so apps can be invoked directly
-/// (e.g. a `dbmate` symlink that runs `climate run dbmate`).
+/// Create symlinks next to the climate binary so apps can be started by their own name (e.g. an
+/// `ffmpeg` symlink that runs `climate run ffmpeg`).
 #[derive(FromArgs)]
 #[argp(subcommand, name = "link")]
 struct LinkCmd {
@@ -54,16 +54,16 @@ struct LinkCmd {
     apps: Vec<String>,
 }
 
-/// List the available app definitions.
+/// List the apps you can run.
 #[derive(FromArgs)]
 #[argp(subcommand, name = "list")]
 struct ListCmd {}
 
-/// Fetch (pull) the image for an app.
+/// Download an app's image.
 #[derive(FromArgs)]
 #[argp(subcommand, name = "pull")]
 struct PullCmd {
-    /// pull newer images, but only for apps already present locally
+    /// download newer images for apps you already pulled
     #[argp(switch, short = 'u')]
     update: bool,
     /// app name (omit with --update)
@@ -71,22 +71,24 @@ struct PullCmd {
     app: Option<String>,
 }
 
-/// Run an app, forwarding any trailing arguments to it.
+/// Run an app. Everything after the app name is passed on to the app itself, options like --help
+/// included.
 #[derive(FromArgs)]
 #[argp(subcommand, name = "run")]
 struct RunCmd {
-    /// app name followed by arguments forwarded verbatim to the app.
-    /// A single greedy positional so leading-dash args (e.g. --pretty,
-    /// --help) reach the app without needing a `--` separator.
+    // A single greedy positional so leading-dash args (e.g. --pretty, --help) reach the app
+    // without needing a `--` separator. argp prints no help for a greedy positional, so the
+    // description below never reaches the user.
+    /// app name, followed by the arguments passed on to it
     #[argp(positional, greedy)]
     cmd: Vec<String>,
 }
 
-/// Print an app definition in full, filling in the defaults of absent keys.
+/// Print an app's settings, including the ones left at their default.
 #[derive(FromArgs)]
 #[argp(subcommand, name = "show")]
 struct ShowCmd {
-    /// print only the keys the definition states, omitting the defaults
+    /// print only the settings the app sets itself
     #[argp(switch, short = 'n')]
     no_defaults: bool,
     /// app name
@@ -94,17 +96,17 @@ struct ShowCmd {
     app: String,
 }
 
-/// Download the app definitions from the apps Git repo.
+/// Download or update the list of available apps.
 #[derive(FromArgs)]
 #[argp(subcommand, name = "sync")]
 struct SyncCmd {
-    /// write to the system directory (/usr/share/climate/apps) instead of the user one
+    /// install for all users, in /usr/share/climate/apps (needs root)
     #[argp(switch, short = 's')]
     system: bool,
 }
 
-// Create a symlink at `link` pointing to `target`. A correct symlink is left
-// untouched; any other existing entry is replaced only when `force` is set.
+// Create a symlink at `link` pointing to `target`. If it already points there nothing happens;
+// anything else in the way is replaced only with `force`.
 fn create_symlink(target: &Path, link: &Path, force: bool) -> Result<()> {
     if std::fs::read_link(link).is_ok_and(|existing| existing == target) {
         return Ok(());
@@ -133,7 +135,7 @@ fn link(cmd: &LinkCmd) -> Result<()> {
     let exe = std::env::current_exe().context("resolving the climate executable")?;
     let dir = exe.parent().expect("executable path has a parent");
     let exe_name = exe.file_name().expect("executable path has a file name");
-    // Point the symlinks at the relative binary name so they keep working if
+    // Point the symlinks at the bare binary name instead of a full path, so they keep working if
     // the directory is moved or renamed.
     let target = Path::new(exe_name);
 
@@ -153,7 +155,7 @@ fn list() -> Result<()> {
         .into_iter()
         .filter_map(|app_name| AppConfig::load_or_warn(&app_name))
         .collect();
-    // Pad the name column to the widest name to align the descriptions.
+    // Pad the name column to the longest name so the descriptions line up.
     let width = configs
         .iter()
         .map(|cfg| cfg.app.name.len())
@@ -174,8 +176,8 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    // When invoked through a symlink whose name isn't "climate" (e.g. a
-    // `dbmate` symlink to the binary), dispatch as `climate run <name> ...`.
+    // argv[0] is the name the binary was invoked under. Anything other than "climate" is a symlink
+    // created by `climate link`, so run that app.
     let argv0 = std::env::args().next();
     let app_link = argv0.as_deref().and_then(|argv0| {
         let app_name = Path::new(argv0).file_name()?.to_str()?;
@@ -188,8 +190,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // A container hook re-invokes the binary with this internal argument; it runs
-    // inside the container's network namespace, not as a user-facing command.
+    // Not a user-facing command: the container runtime re-runs this binary with this argument from
+    // inside the container to bring the loopback up.
     if std::env::args().nth(1).as_deref() == Some(spec::LOOPBACK_HOOK_ARG) {
         spec::bring_loopback_up()?;
         return Ok(());
@@ -201,8 +203,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let Some(command) = cli.command else {
-        // Reparse with --help to obtain the same help message that argp
-        // prints for `climate --help`.
+        // No subcommand given: parse again with --help so argp produces the exact help text
+        // `climate --help` would print.
         let Err(argp::EarlyExit::Help(help)) = Cli::from_args(&["climate"], &["--help"]) else {
             unreachable!();
         };
