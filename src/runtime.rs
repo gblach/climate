@@ -20,9 +20,9 @@ use std::thread::JoinHandle;
 
 use crate::store;
 
-// Scratch directory for running containers, under $XDG_RUNTIME_DIR or the temp directory. Each run
-// creates overlays/, bundles/ and containers/ here and the `clean` command removes them, so both
-// sides must agree on the location.
+// Scratch directory for running containers, under $XDG_RUNTIME_DIR or the temp directory. Each
+// run creates overlays/, bundles/ and containers/ here and the `clean` command removes them,
+// so both sides must agree on the location.
 pub fn runtime_dir() -> PathBuf {
     dirs::runtime_dir()
         .unwrap_or_else(std::env::temp_dir)
@@ -39,8 +39,8 @@ fn window_size() -> Winsize {
     })
 }
 
-// Copy bytes from one stream to the other until either end closes. A read error - which is what a
-// closed terminal looks like - counts as a normal end.
+// Copy bytes from one stream to the other until either end closes. A read error - which is what
+// a closed terminal looks like - counts as a normal end.
 fn copy(mut from: impl Read, mut to: impl Write) {
     let mut buf = [0u8; 8192];
     loop {
@@ -87,8 +87,8 @@ impl Drop for RawMode {
 
 // A local socket used to receive a terminal from the container runtime.
 //
-// A pty is a pair of connected endpoints that behaves like a terminal: youki creates one inside the
-// container, hands the app one end as its terminal, and passes us the other. That is what makes
+// A pty is a pair of connected endpoints that behaves like a terminal: youki creates one inside
+// the container, hands the app one end as its terminal, and passes us the other. That is what makes
 // Ctrl-C and Ctrl-Z turn into signals for the app; handing it our own stdin and stdout would not.
 //
 // An open file cannot be returned through a normal API, so it comes over this socket: we listen,
@@ -187,14 +187,14 @@ static PENDING_SIGNAL: AtomicI32 = AtomicI32::new(0);
 static FORWARDED: AtomicBool = AtomicBool::new(false);
 
 // Pass Ctrl-C and `kill` (SIGINT/SIGTERM) on to the container instead of dying on the spot, so that
-// it shuts down, `wait` returns, and the usual cleanup - deleting the container, unmounting the
-// image, removing the bundle - still happens. Without this a signal during a non-interactive run
-// would leave both the mount and the container behind. (Interactive runs never get here: in raw
-// mode Ctrl-C is just a byte sent to the container's terminal.)
+// it shuts down, `wait` returns, and the usual cleanup - deleting the container, unmounting
+// the image, removing the bundle - still happens. Without this a signal during a non-interactive
+// run would leave both the mount and the container behind. (Interactive runs never get here:
+// in raw mode Ctrl-C is just a byte sent to the container's terminal.)
 //
 // The container's first process is PID 1 inside the container, and the kernel silently drops
-// signals that PID 1 has no handler for, so a second signal is upgraded to SIGKILL, which cannot be
-// ignored.
+// signals that PID 1 has no handler for, so a second signal is upgraded to SIGKILL, which cannot
+// be ignored.
 //
 // Signal handlers may only call a small set of functions; these belong to it.
 extern "C" fn forward_signal(signum: libc::c_int) {
@@ -222,8 +222,8 @@ fn install_signal_forwarding() -> Result<()> {
     Ok(())
 }
 
-// Write end of a pipe to ourselves (-1 while there is none). A signal handler may not resize a
-// terminal, so it only writes one byte here and the thread reading the other end does the work.
+// Write end of a pipe to ourselves (-1 while there is none). A signal handler may not resize
+// a terminal, so it only writes one byte here and the thread reading the other end does the work.
 static RESIZE_PIPE: AtomicI32 = AtomicI32::new(-1);
 
 extern "C" fn notify_resize(_signum: libc::c_int) {
@@ -233,10 +233,10 @@ extern "C" fn notify_resize(_signum: libc::c_int) {
     }
 }
 
-// Keeps the container's terminal the same size as the user's for as long as an interactive run
-// lasts. The kernel reports a resize with the SIGWINCH signal; copying the new size across makes it
-// send that same signal on to the app, which is how full-screen programs know to redraw. Dropping
-// this ends it.
+// Keeps the container's terminal the same size as the user's for as long as an interactive
+// run lasts. The kernel reports a resize with the SIGWINCH signal; copying the new size across
+// makes it send that same signal on to the app, which is how full-screen programs know to redraw.
+// Dropping this ends it.
 struct ResizeForwarder {
     pipe: Option<OwnedFd>,
     thread: Option<JoinHandle<()>>,
@@ -282,8 +282,8 @@ impl ResizeForwarder {
 
 impl Drop for ResizeForwarder {
     fn drop(&mut self) {
-        // Turn the handler off before closing the pipe, or a late signal could write to a
-        // descriptor number something else now owns.
+        // Turn the handler off before closing the pipe, or a late signal could write
+        // to a descriptor number something else now owns.
         unsafe { libc::signal(libc::SIGWINCH, libc::SIG_DFL) };
         RESIZE_PIPE.store(-1, Ordering::Relaxed);
         drop(self.pipe.take());
@@ -308,14 +308,14 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
     spec.save(bundle.join("config.json"))
         .context("writing the runtime spec")?;
 
-    // youki starts the container through a helper process that exits at once, which detaches the
-    // container from us and would stop us waiting on it. Registering as a "subreaper" hands such
-    // orphans back to us, not to PID 1.
+    // youki starts the container through a helper process that exits at once, which detaches
+    // the container from us and would stop us waiting on it. Registering as a "subreaper" hands
+    // such orphans back to us, not to PID 1.
     set_child_subreaper(Some(getpid())).context("becoming a child subreaper")?;
     install_signal_forwarding()?;
 
-    // The socket must be listening before the container is built, because the container hands its
-    // terminal over while it is being created.
+    // The socket must be listening before the container is built, because the container hands
+    // its terminal over while it is being created.
     let console = match tty {
         true => Some(ConsoleSocket::bind(&bundle)?),
         false => None,
@@ -417,8 +417,8 @@ fn materialise_stub(stub: &Path, mountpoints: &[MountPoint]) -> Result<()> {
     Ok(())
 }
 
-// A layer path as a string. Layer paths are passed to fuse-overlayfs as one ':'-separated list, so
-// a path containing ':' cannot be expressed.
+// A layer path as a string. Layer paths are passed to fuse-overlayfs as one ':'-separated list,
+// so a path containing ':' cannot be expressed.
 fn lowerdir_arg(path: &Path) -> Result<String> {
     let path = path
         .to_str()
@@ -449,8 +449,8 @@ impl Mount {
     }
 
     // Stack the image's layers. `layers` lists them bottom-up, the way the image stores them, while
-    // fuse-overlayfs expects the topmost first, so the order is reversed. The stub goes above all
-    // of them.
+    // fuse-overlayfs expects the topmost first, so the order is reversed. The stub goes above
+    // all of them.
     pub fn new(layers: &[String], mountpoints: &[MountPoint]) -> Result<Self> {
         if layers.is_empty() {
             bail!("image has no layers to mount");

@@ -39,8 +39,8 @@ fn alive(pid: i32) -> bool {
     !matches!(test_kill_process(pid), Err(Errno::SRCH))
 }
 
-// Everything in the store still in use: for each downloaded image its manifest, the settings it
-// points at, and its layers. The rest can be deleted.
+// Everything in the store still in use: for each downloaded image its manifest, the settings
+// it points at, and its layers. The rest can be deleted.
 fn live_set(store: &Path) -> Result<(HashSet<String>, HashSet<String>)> {
     let mut live_blobs = HashSet::new();
     let mut live_layers = HashSet::new();
@@ -64,17 +64,17 @@ fn live_set(store: &Path) -> Result<(HashSet<String>, HashSet<String>)> {
 }
 
 // Delete everything in the store that no downloaded image refers to any more. Because images share
-// layers, a layer is deleted only once no image needs it. Leftovers from interrupted downloads and
-// unpacks are swept up as well.
+// layers, a layer is deleted only once no image needs it. Leftovers from interrupted downloads
+// and unpacks are swept up as well.
 pub fn gc_images() -> Result<()> {
     let store = store::dir()?;
     if !store.exists() {
         return Ok(());
     }
 
-    // If a manifest is missing or damaged we cannot tell what is still in use, and deleting on a
-    // guess could destroy a good image. So warn and skip the deletions; the other clean-up steps
-    // are independent and may repair this.
+    // If a manifest is missing or damaged we cannot tell what is still in use, and deleting
+    // on a guess could destroy a good image. So warn and skip the deletions; the other clean-up
+    // steps are independent and may repair this.
     let (live_blobs, live_layers) = match live_set(&store) {
         Ok(live) => live,
         Err(err) => {
@@ -149,8 +149,8 @@ fn drop_orphan_refs() -> Result<()> {
 }
 
 // Whether something is currently mounted at this path, according to the list of mounts the kernel
-// exposes in /proc. Paths containing a space, tab, newline or backslash appear escaped there and
-// never match, which only makes this cautious.
+// exposes in /proc. Paths containing a space, tab, newline or backslash appear escaped there
+// and never match, which only makes this cautious.
 fn is_mounted(path: &Path) -> bool {
     let Ok(mounts) = fs::read_to_string("/proc/self/mounts") else {
         return false;
@@ -167,8 +167,8 @@ fn is_mounted(path: &Path) -> bool {
 fn prune_runtime() -> Result<()> {
     let base = crate::runtime::runtime_dir();
 
-    // Containers come first: a killed run's container keeps running and holds the mounted image in
-    // use. Deleting it with force stops its processes.
+    // Containers come first: a killed run's container keeps running and holds the mounted image
+    // in use. Deleting it with force stops its processes.
     for entry in entries(&base.join("containers"))? {
         let id = entry.file_name().to_string_lossy().into_owned();
         let Some(pid) = pid_of(&id, "climate-") else {
@@ -206,8 +206,8 @@ fn prune_runtime() -> Result<()> {
         }
         // The fuse-overlayfs process may already be gone, leaving an ordinary empty directory that
         // needs no unmounting. Only a path that is still mounted after a failed attempt really
-        // blocks removal - and if the mount list was out of date, the removal below fails and
-        // reports it.
+        // blocks removal - and if the mount list was out of date, the removal below fails
+        // and reports it.
         let merged = entry.path().join("merged");
         if is_mounted(&merged) {
             let status = Command::new("fusermount3")
@@ -227,8 +227,8 @@ fn prune_runtime() -> Result<()> {
     Ok(())
 }
 
-// The `clean` command: forget images of apps that are gone, delete image data nothing uses any
-// more, and clean up after killed runs.
+// The `clean` command: forget images of apps that are gone, delete image data nothing uses
+// any more, and clean up after killed runs.
 pub fn clean() -> Result<()> {
     drop_orphan_refs()?;
     gc_images()?;

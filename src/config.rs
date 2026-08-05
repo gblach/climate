@@ -57,8 +57,8 @@ pub enum Entrypoint {
     List(Vec<String>),
 }
 
-// How much network the container gets. `Full` uses the host's own network, so the app reaches the
-// internet just like the user does. The other two give it a private, empty network: `None` (the
+// How much network the container gets. `Full` uses the host's own network, so the app reaches
+// the internet just like the user does. The other two give it a private, empty network: `None` (the
 // default) has no working interface at all, `Localhost` enables 127.0.0.1 only, so the app can talk
 // just to itself.
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
@@ -70,8 +70,8 @@ pub enum Network {
     Localhost,
 }
 
-// How to run the image. The defaults share the current working directory and give the container no
-// network; an app can override both.
+// How to run the image. The defaults share the current working directory and give the container
+// no network; an app can override both.
 #[derive(Debug, Deserialize)]
 pub struct RunConfig {
     #[serde(default)]
@@ -165,8 +165,8 @@ fn validate_app_name(app_name: &str) -> Result<()> {
     Ok(())
 }
 
-// Find an app definition in the search directories and read it. The path is returned alongside the
-// text so error messages can name the file.
+// Find an app definition in the search directories and read it. The path is returned alongside
+// the text so error messages can name the file.
 fn read(app_name: &str) -> Result<(PathBuf, String)> {
     validate_app_name(app_name)?;
     let filename = format!("{app_name}.toml");
@@ -225,24 +225,24 @@ impl AppConfig {
         }
     }
 
-    // Download the image if it is missing, stack its layers into a root filesystem, describe the
-    // container, and run it. Ends this process with the container's exit code, so it only returns
-    // when the setup fails.
+    // Download the image if it is missing, stack its layers into a root filesystem, describe
+    // the container, and run it. Ends this process with the container's exit code, so it only
+    // returns when the setup fails.
     pub fn run(&self, user_args: &[String]) -> Result<()> {
         crate::spec::check_host_dir(&self.run)?;
         let image = crate::store::resolve(self)?;
         let mountpoints = crate::spec::mountpoints(self)?;
         let mount = crate::runtime::Mount::new(&image.layers, &mountpoints)?;
 
-        // Inside the container the app appears to run as root, but the kernel maps that back to the
-        // real user, so files it writes into the shared directory stay owned by that user.
+        // Inside the container the app appears to run as root, but the kernel maps that back
+        // to the real user, so files it writes into the shared directory stay owned by that user.
         let (uid, gid) = (
             rustix::process::getuid().as_raw(),
             rustix::process::getgid().as_raw(),
         );
-        // Give the app a terminal only when all three standard streams really are one. If any of
-        // them is piped or redirected, the container gets them as they are, so the app notices and
-        // prints plain output.
+        // Give the app a terminal only when all three standard streams really are one.
+        // If any of them is piped or redirected, the container gets them as they are,
+        // so the app notices and prints plain output.
         let tty = std::io::stdin().is_terminal()
             && std::io::stdout().is_terminal()
             && std::io::stderr().is_terminal();
@@ -256,9 +256,9 @@ impl AppConfig {
     }
 }
 
-// Download the apps repository. An ssh URL talks to the server through an ssh subprocess, the way
-// git does (so $GIT_SSH_COMMAND applies); an http(s) URL uses the built-in HTTP client. Both speak
-// version 2 of the git protocol.
+// Download the apps repository. An ssh URL talks to the server through an ssh subprocess,
+// the way git does (so $GIT_SSH_COMMAND applies); an http(s) URL uses the built-in HTTP client.
+// Both speak version 2 of the git protocol.
 fn fetch(repo: &Repository, url: &str, opts: &FetchOptions) -> Result<FetchOutcome> {
     if is_ssh_url(url) {
         let conn_opts = ConnectOptions {
@@ -304,8 +304,8 @@ fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<()> {
         .and_then(|u| u.new_oid)
         .with_context(|| format!("fetch did not update {tracking}"))?;
 
-    // The file listing of the commit checked out now, for the checkout below to compare against. A
-    // fresh clone has no local branch and nothing to compare.
+    // The file listing of the commit checked out now, for the checkout below to compare against.
+    // A fresh clone has no local branch and nothing to compare.
     let local_branch = format!("refs/heads/{branch}");
     let from_tree = match resolve_ref(&repo.git_dir, &local_branch) {
         Ok(old_tip) => {
@@ -329,9 +329,9 @@ fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<()> {
     Ok(())
 }
 
-// Download the app definitions: the first run clones the repository, later runs update it.
-// `--system` writes to the system-wide directory, which needs root, otherwise they go to the user's
-// data directory.
+// Download the app definitions: the first run clones the repository, later runs update
+// it. `--system` writes to the system-wide directory, which needs root, otherwise they
+// go to the user's data directory.
 pub fn sync(system: bool) -> Result<()> {
     let target = if system {
         PathBuf::from(SYSTEM_DIR)

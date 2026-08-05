@@ -38,8 +38,8 @@ enum Command {
 #[argp(subcommand, name = "clean")]
 struct CleanCmd {}
 
-/// Create symlinks next to the climate binary so apps can be started by their own name (e.g. an
-/// `ffmpeg` symlink that runs `climate run ffmpeg`).
+/// Create symlinks next to the climate binary so apps can be started by their own name (e.g.
+/// an `ffmpeg` symlink that runs `climate run ffmpeg`).
 #[derive(FromArgs)]
 #[argp(subcommand, name = "link")]
 struct LinkCmd {
@@ -76,9 +76,9 @@ struct PullCmd {
 #[derive(FromArgs)]
 #[argp(subcommand, name = "run")]
 struct RunCmd {
-    // A single greedy positional so leading-dash args (e.g. --pretty, --help) reach the app
-    // without needing a `--` separator. argp prints no help for a greedy positional, so the
-    // description below never reaches the user.
+    // A single greedy positional so leading-dash args (e.g. --pretty, --help) reach the app without
+    // needing a `--` separator. argp prints no help for a greedy positional, so the description
+    // below never reaches the user.
     /// app name, followed by the arguments passed on to it
     #[argp(positional, greedy)]
     cmd: Vec<String>,
@@ -135,8 +135,8 @@ fn link(cmd: &LinkCmd) -> Result<()> {
     let exe = std::env::current_exe().context("resolving the climate executable")?;
     let dir = exe.parent().expect("executable path has a parent");
     let exe_name = exe.file_name().expect("executable path has a file name");
-    // Point the symlinks at the bare binary name instead of a full path, so they keep working if
-    // the directory is moved or renamed.
+    // Point the symlinks at the bare binary name instead of a full path, so they keep working
+    // if the directory is moved or renamed.
     let target = Path::new(exe_name);
 
     for app_name in app_names {

@@ -75,8 +75,8 @@ pub fn show(app_name: &str, defaults: bool) -> Result<()> {
     if defaults || table("run").is_some_and(|table| !table.is_empty()) {
         println!("\n[run]");
     }
-    // No value stands for "no entrypoint set"; it means the image's own entrypoint runs, so say
-    // that in a comment instead of inventing a default.
+    // No value stands for "no entrypoint set"; it means the image's own entrypoint runs,
+    // so say that in a comment instead of inventing a default.
     match &config.run.entrypoint {
         Some(entrypoint) => printer.key("entrypoint", entrypoint_value(entrypoint), false),
         None => {

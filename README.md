@@ -3,15 +3,15 @@
 > Your CLI's new mate: run containerized command-line tools like they're installed natively. Think
 > Flatpak, but for the terminal.
 
-Each app is described by a TOML file that says how to fetch its image and how to run it. When an app
-shares a directory from your computer (your working directory or your home), `climate` runs the tool
-as you, at the same path, so the files it reads and writes stay yours.
+Each app is described by a TOML file that says how to fetch its image and how to run it. When
+an app shares a directory from your computer (your working directory or your home), `climate` runs
+the tool as you, at the same path, so the files it reads and writes stay yours.
 
 ## Requirements
 
 `climate` mounts image layers with `fuse-overlayfs` and unmounts them with `fusermount3`, so both
-have to be installed. `fusermount3` comes with `fuse3`, which every `fuse-overlayfs` package
-depends on:
+have to be installed. `fusermount3` comes with `fuse3`, which every `fuse-overlayfs` package depends
+on:
 
 ```sh
 sudo dnf install fuse-overlayfs      # Fedora
@@ -39,8 +39,8 @@ climate sync          # into ~/.local/share/climate/apps/
 climate list          # show available apps
 ```
 
-Definitions are pulled from `https://github.com/gblach/climate-apps.git` by default. Set
-`$CLIMATE_APPS_URL` to sync from a different repository (https or ssh).
+Definitions are pulled from `https://github.com/gblach/climate-apps.git` by default.
+Set `$CLIMATE_APPS_URL` to sync from a different repository (https or ssh).
 
 ## Run your first app
 
@@ -128,11 +128,11 @@ App definitions are loaded at runtime from these directories, highest precedence
 | `~/.local/share/climate/apps/` | synced apps (`$XDG_DATA_HOME/climate/apps/` if set)     |
 | `/usr/share/climate/apps/`     | system-wide                                             |
 
-`climate sync` only writes the synced apps (the data directory, or `/usr/share/climate/apps/`
-with `--system`); your own definitions in `~/.config/climate/apps/` are never touched by it.
+`climate sync` only writes the synced apps (the data directory, or `/usr/share/climate/apps/` with
+`--system`); your own definitions in `~/.config/climate/apps/` are never touched by it.
 
-Set `$CLIMATE_APPS_DIR` to a directory of your own - a checkout you are working on, for example -
-and it is searched before all the others.
+Set `$CLIMATE_APPS_DIR` to a directory of your own - a checkout you are working
+on, for example - and it is searched before all the others.
 
 To customize an app, copy its `*.toml` into a higher-precedence directory and edit it there:
 
@@ -140,16 +140,16 @@ To customize an app, copy its `*.toml` into a higher-precedence directory and ed
 cp ~/.local/share/climate/apps/ffmpeg.toml ~/.config/climate/apps/
 ```
 
-`climate show <app>` prints the definition that is actually in effect, with every key the
-file leaves out filled in from its default and grayed out. Redirecting the output drops the
-colors, so it doubles as a starting point for your own copy:
+`climate show <app>` prints the definition that is actually in effect, with every key the file
+leaves out filled in from its default and grayed out. Redirecting the output drops the colors,
+so it doubles as a starting point for your own copy:
 
 ```sh
 climate show ffmpeg > ~/.config/climate/apps/ffmpeg.toml
 ```
 
-Pass `-n`/`--no-defaults` to leave the defaults out and print only what the definition
-itself states.
+Pass `-n`/`--no-defaults` to leave the defaults out and print only what the definition itself
+states.
 
 You can also drop entirely new `*.toml` files into any of these directories. A definition
 in a higher-precedence directory overrides one of the same name below it.
@@ -157,8 +157,9 @@ in a higher-precedence directory overrides one of the same name below it.
 ## How it works
 
 `climate` is a self-contained container engine: it pulls an app's image, mounts the layers, and runs
-the container in-process. There is no `podman`, `crun`, or `skopeo` to install - `climate` is a
-single binary, next to the `fuse-overlayfs` and `fusermount3` helpers listed under Requirements.
+the container in-process. There is no `podman`, `crun`, or `skopeo` to install - `climate`
+is a single binary, next to the `fuse-overlayfs` and `fusermount3` helpers listed under
+Requirements.
 
 Containers run rootless, as your own user and with no extra privileges:
 

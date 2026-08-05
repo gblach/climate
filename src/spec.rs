@@ -27,14 +27,14 @@ const DEFAULT_MOUNT_DIRS: [&str; 3] = ["/proc", "/dev", "/sys"];
 // the same inside and outside the container.
 const HOST_NET_FILES: [&str; 2] = ["/etc/resolv.conf", "/etc/hosts"];
 
-// Marker argument this binary passes to itself when the container runtime calls it to bring the
-// container's loopback interface up.
+// Marker argument this binary passes to itself when the container runtime calls it to bring
+// the container's loopback interface up.
 pub const LOOPBACK_HOOK_ARG: &str = "__lo-up";
 
 // Assemble the command line to run, following the same rules as docker and podman: an entrypoint
 // set by the app definition replaces both the image's entrypoint and its default command; otherwise
-// the image's entrypoint stays, and its default command is used only when the user passed no
-// arguments.
+// the image's entrypoint stays, and its default command is used only when the user passed
+// no arguments.
 fn command(run: &RunConfig, image: Option<&ImageExecConfig>, user_args: &[String]) -> Vec<String> {
     let extra: Vec<String> = run.args.iter().chain(user_args).cloned().collect();
     let mut argv = Vec::new();
@@ -99,8 +99,8 @@ fn tmpfs(destination: &str, mode: &str) -> Result<Mount> {
 
 fn bind(source: &Path, destination: &Path, readonly: bool) -> Result<Mount> {
     let access = if readonly { "ro" } else { "rw" };
-    // The type must be "bind", not "none": with "bind" youki creates a file as the mount target for
-    // a file source, while "none" always creates a directory.
+    // The type must be "bind", not "none": with "bind" youki creates a file as the mount target
+    // for a file source, while "none" always creates a directory.
     MountBuilder::default()
         .destination(destination.to_path_buf())
         .typ("bind")
@@ -120,8 +120,8 @@ fn host_dir(run: &RunConfig) -> Result<Option<PathBuf>> {
     })
 }
 
-// Stop the working directory share from handing over far more than intended. Started from `/`, it
-// would share the whole host filesystem read-write and hide the image's own files, so refuse.
+// Stop the working directory share from handing over far more than intended. Started from `/`,
+// it would share the whole host filesystem read-write and hide the image's own files, so refuse.
 // Started from the home directory, it would expose everything in it (~/.ssh, keyrings, ...)
 // read-write, so warn. Subdirectories of home are the normal case and pass without a word.
 pub fn check_host_dir(run: &RunConfig) -> Result<()> {
@@ -143,8 +143,8 @@ pub fn check_host_dir(run: &RunConfig) -> Result<()> {
     Ok(())
 }
 
-// Which of the host's name resolution files to share. Nothing is shared unless the app uses the
-// host network, and a file that does not exist is skipped.
+// Which of the host's name resolution files to share. Nothing is shared unless the app uses
+// the host network, and a file that does not exist is skipped.
 fn host_net_files(run: &RunConfig) -> Vec<PathBuf> {
     if run.network != Network::Full {
         return Vec::new();
@@ -156,9 +156,9 @@ fn host_net_files(run: &RunConfig) -> Vec<PathBuf> {
         .collect()
 }
 
-// Every path something will be mounted onto. The image may not contain these directories, and the
-// container's root filesystem is read-only, so they are created in a separate stub layer. Keep in
-// step with the mounts in `build`.
+// Every path something will be mounted onto. The image may not contain these directories,
+// and the container's root filesystem is read-only, so they are created in a separate stub layer.
+// Keep in step with the mounts in `build`.
 pub fn mountpoints(cfg: &AppConfig) -> Result<Vec<MountPoint>> {
     let run = &cfg.run;
     let mut points: Vec<MountPoint> = DEFAULT_MOUNT_DIRS
@@ -176,8 +176,8 @@ pub fn mountpoints(cfg: &AppConfig) -> Result<Vec<MountPoint>> {
 }
 
 // Build the description of one container run that the runtime consumes: the read-only root
-// filesystem, the command, environment and start directory, the user and isolation settings, and
-// the mounts.
+// filesystem, the command, environment and start directory, the user and isolation settings,
+// and the mounts.
 pub fn build(
     cfg: &AppConfig,
     image: &ImageConfiguration,
@@ -193,9 +193,9 @@ pub fn build(
     let mut spec = Spec::rootless(uid, gid);
 
     // The root filesystem is a stack of image layers with no writable layer on top, so it already
-    // rejects every write. The spec's own read-only flag is deliberately left off: it would add
-    // nothing, and would make youki remount the root, which an unprivileged user cannot do on this
-    // kind of mount.
+    // rejects every write. The spec's own read-only flag is deliberately left off: it would
+    // add nothing, and would make youki remount the root, which an unprivileged user cannot
+    // do on this kind of mount.
     spec.set_root(Some(
         RootBuilder::default()
             .path(root.to_path_buf())
@@ -264,9 +264,9 @@ pub fn build(
     }
     spec.set_linux(Some(linux));
 
-    // The loopback interface has to be enabled from inside the new network namespace, which is
-    // where the runtime executes hooks. The hook runs this same binary again; see
-    // `bring_loopback_up`.
+    // The loopback interface has to be enabled from inside the new network namespace, which
+    // is where the runtime executes hooks. The hook runs this same binary again;
+    // see `bring_loopback_up`.
     if run.network == Network::Localhost {
         let exe = std::env::current_exe().context("resolving the climate executable")?;
         let hook = HookBuilder::default()
@@ -285,10 +285,10 @@ pub fn build(
     Ok(spec)
 }
 
-// Enable the container's loopback interface so connections to 127.0.0.1 work. This runs as a
-// container hook, inside the container's own network namespace, where the interface exists but is
-// still disabled and where switching it on needs no privileges. The ioctl calls read its flags and
-// set the "up" bit.
+// Enable the container's loopback interface so connections to 127.0.0.1 work. This runs
+// as a container hook, inside the container's own network namespace, where the interface exists
+// but is still disabled and where switching it on needs no privileges. The ioctl calls read
+// its flags and set the "up" bit.
 pub fn bring_loopback_up() -> Result<()> {
     let sock = socket(AddressFamily::INET, SocketType::DGRAM, None)
         .context("opening a socket to configure loopback")?;

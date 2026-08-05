@@ -13,8 +13,8 @@ use crate::config::AppConfig;
 use crate::pull;
 
 // Local storage for downloaded images, in ~/.local/share/climate/images. It is the data directory
-// rather than a cache because images marked `pull = false` come from elsewhere and could not be
-// downloaded again if they were dropped.
+// rather than a cache because images marked `pull = false` come from elsewhere and could
+// not be downloaded again if they were dropped.
 //
 //   blobs/<algo>/<hex>     a downloaded file, e.g. a manifest or image config
 //   layers/<algo>/<hex>/   one layer, unpacked into a directory
@@ -29,8 +29,8 @@ pub fn dir() -> Result<PathBuf> {
         .join("images"))
 }
 
-// Turn a digest ("sha256:<hex>") into the relative path "sha256/<hex>". Only letters and digits are
-// accepted, so a bad digest cannot point outside the store.
+// Turn a digest ("sha256:<hex>") into the relative path "sha256/<hex>". Only letters and digits
+// are accepted, so a bad digest cannot point outside the store.
 fn digest_path(digest: &str) -> Result<PathBuf> {
     let (algo, hex) = digest
         .split_once(':')
@@ -55,10 +55,10 @@ pub fn layer_path(digest: &str) -> Result<PathBuf> {
     Ok(dir()?.join("layers").join(digest_path(digest)?))
 }
 
-// Path of the file under refs/ that records which version of an image was downloaded last. Its
-// existence answers "do we already have this image?" without asking the registry. The '/' of a
-// reference cannot appear in a file name and is replaced by '+', which references never contain, so
-// none collide.
+// Path of the file under refs/ that records which version of an image was downloaded last.
+// Its existence answers "do we already have this image?" without asking the registry.
+// The '/' of a reference cannot appear in a file name and is replaced by '+', which references
+// never contain, so none collide.
 pub fn ref_marker(reference: &str) -> Result<PathBuf> {
     Ok(dir()?.join("refs").join(reference.replace('/', "+")))
 }
@@ -105,8 +105,8 @@ pub fn has_layer(digest: &str) -> Result<bool> {
 }
 
 // A name no other run will pick: this process's pid plus the current time in nanoseconds. It goes
-// into the names of the directories a run creates, so `clean::pid_of` can read the pid back and
-// check whether that run is alive.
+// into the names of the directories a run creates, so `clean::pid_of` can read the pid back
+// and check whether that run is alive.
 pub fn unique_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -115,9 +115,9 @@ pub fn unique_id() -> String {
     format!("{}-{nanos}", std::process::id())
 }
 
-// A temporary path for a download, inside the store so that it is on the same filesystem as its
-// final location: a rename within one filesystem happens in one step, so a half-written file is
-// never mistaken for a finished one.
+// A temporary path for a download, inside the store so that it is on the same filesystem
+// as its final location: a rename within one filesystem happens in one step, so a half-written file
+// is never mistaken for a finished one.
 pub fn temp_path(tag: &str) -> Result<PathBuf> {
     let dir = dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -131,10 +131,10 @@ pub fn commit_blob(temp: &Path, digest: &str) -> Result<()> {
     fs::rename(temp, &dest).with_context(|| format!("storing blob {digest}"))
 }
 
-// Delete a directory tree that may contain read-only directories. Unpacked layers keep the
-// permissions the image gave them, and nothing can be deleted from a directory that is not
-// writable, so every directory is made writable first. Symlinks are not followed, so only real
-// directories are touched.
+// Delete a directory tree that may contain read-only directories. Unpacked layers keep
+// the permissions the image gave them, and nothing can be deleted from a directory that
+// is not writable, so every directory is made writable first. Symlinks are not followed, so only
+// real directories are touched.
 pub fn remove_tree(path: &Path) -> Result<()> {
     fn grant_writable(dir: &Path) -> std::io::Result<()> {
         let mut perms = fs::symlink_metadata(dir)?.permissions();
@@ -192,8 +192,8 @@ pub fn extract_layer(temp: &Path, digest: &str, media_type: &str) -> Result<()> 
     fs::rename(&staging, &dest).with_context(|| format!("finalising layer {digest}"))
 }
 
-// What a run needs from an image: the layers of its filesystem, bottom-up, and the settings it
-// ships with (the command, environment and working directory).
+// What a run needs from an image: the layers of its filesystem, bottom-up, and the settings
+// it ships with (the command, environment and working directory).
 pub struct Image {
     pub layers: Vec<String>,
     pub config: ImageConfiguration,
