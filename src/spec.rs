@@ -114,7 +114,7 @@ fn bind(source: &Path, destination: &Path, readonly: bool) -> Result<Mount> {
 // The host directory shared with the container under the same path, or None when the app shares
 // nothing.
 fn host_dir(run: &RunConfig) -> Result<Option<PathBuf>> {
-    Ok(if run.cwd {
+    Ok(if run.mount_cwd {
         Some(std::env::current_dir().context("resolving current directory")?)
     } else {
         None
@@ -220,7 +220,7 @@ pub fn check_host_dir(run: &RunConfig) -> Result<()> {
     if dir == Path::new("/") {
         bail!(
             "refusing to bind-mount / (the whole host filesystem) into the container; \
-             run from a working directory, or set run.cwd = false to share none"
+             run from a working directory, or set run.mount-cwd = false to share none"
         );
     }
     if dirs::home_dir().is_some_and(|home| dir == home) {

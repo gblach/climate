@@ -85,8 +85,8 @@ pub struct RunConfig {
 
     // Whether the current working directory is shared with the container under the same path. When
     // false nothing is shared and the container starts in the directory the image itself specifies.
-    #[serde(default = "yes")]
-    pub cwd: bool,
+    #[serde(rename = "mount-cwd", default = "yes")]
+    pub mount_cwd: bool,
 
     // Extra host paths to share, beyond the working directory, meant above all for a tool's config
     // directory or file. Each entry is "source", "source:destination", or either with a trailing
@@ -104,7 +104,7 @@ impl Default for RunConfig {
             entrypoint: None,
             args: Vec::new(),
             env: Vec::new(),
-            cwd: true,
+            mount_cwd: true,
             mount: Vec::new(),
             network: Network::default(),
         }
