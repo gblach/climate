@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use grit_lib::config::{ConfigFile, ConfigScope, ConfigSet};
+use grit_lib::diff::{DiffStatus, diff_trees};
 use grit_lib::fetch::{NoProgress, fetch_remote};
 use grit_lib::objects::parse_commit;
 use grit_lib::porcelain::checkout::checkout_between_trees;
@@ -286,9 +287,16 @@ fn fetch(repo: &Repository, url: &str, opts: &FetchOptions) -> Result<FetchOutco
     }
 }
 
+// How the checked-out files changed in one sync.
+struct SyncCounts {
+    added: usize,
+    changed: usize,
+    removed: usize,
+}
+
 // Fetch the newest commit of the apps repository (depth 1, so no history is downloaded) and update
-// the checked-out files to match it.
-fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<()> {
+// the checked-out files to match it. Returns how many files that added, changed and removed.
+fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<SyncCounts> {
     let opts = FetchOptions {
         refspecs: vec![FETCH_REFSPEC.to_string()],
         depth: Some(1),
@@ -331,9 +339,25 @@ fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<()> {
     // Comparing the two file listings, rather than just unpacking the new one, means apps deleted
     // upstream are also deleted locally.
     let commit = parse_commit(&repo.odb.read(&tip)?.data).context("reading the fetched commit")?;
+    // The same comparison the checkout makes, run once more here only to count what it will do.
+    let changes = diff_trees(&repo.odb, from_tree.as_ref(), Some(&commit.tree), "")
+        .context("comparing the checked-out files with the fetched ones")?;
     checkout_between_trees(repo, from_tree.as_ref(), &commit.tree)
         .context("checking out the fetched files")?;
-    Ok(())
+
+    let mut counts = SyncCounts {
+        added: 0,
+        changed: 0,
+        removed: 0,
+    };
+    for change in &changes {
+        match change.status {
+            DiffStatus::Added | DiffStatus::Copied => counts.added += 1,
+            DiffStatus::Deleted => counts.removed += 1,
+            _ => counts.changed += 1,
+        }
+    }
+    Ok(counts)
 }
 
 // Download the app definitions: the first run clones the repository, later runs update
@@ -350,7 +374,7 @@ pub fn sync(system: bool) -> Result<()> {
     };
 
     let git_dir = target.join(".git");
-    if git_dir.is_dir() {
+    let counts = if git_dir.is_dir() {
         let repo = Repository::open(&git_dir, Some(&target))
             .with_context(|| format!("opening {}", target.display()))?;
         // grit-lib offers no remote API, so read the URL out of the git config.
@@ -358,7 +382,7 @@ pub fn sync(system: bool) -> Result<()> {
         let url = cfg
             .get("remote.origin.url")
             .context("the apps repository has no remote.origin.url")?;
-        fetch_and_checkout(&repo, &url)?;
+        fetch_and_checkout(&repo, &url)?
     } else {
         if let Ok(mut entries) = std::fs::read_dir(&target)
             && entries.next().is_some()
@@ -386,9 +410,12 @@ pub fn sync(system: bool) -> Result<()> {
             .context("recording remote.origin.fetch")?;
         cfg.write().context("writing repository config")?;
 
-        fetch_and_checkout(&repo, &url)?;
-    }
+        fetch_and_checkout(&repo, &url)?
+    };
 
-    println!("synced apps into {}", target.display());
+    println!(
+        "synced apps: {} added, {} changed, {} removed",
+        counts.added, counts.changed, counts.removed
+    );
     Ok(())
 }
