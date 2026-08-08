@@ -5,6 +5,7 @@ use oci_spec::runtime::{
     ProcessBuilder, RootBuilder, Spec,
 };
 use rustix::net::{AddressFamily, SocketType, socket};
+use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
@@ -120,6 +121,94 @@ fn host_dir(run: &RunConfig) -> Result<Option<PathBuf>> {
     })
 }
 
+// A path from an app definition, made absolute. A leading '~' becomes the user's home directory,
+// so a definition can name a config directory without knowing where home is.
+fn expand_path(path: &str) -> Result<PathBuf> {
+    let expanded = if path == "~" || path.starts_with("~/") {
+        let home = dirs::home_dir().context("resolving the home directory")?;
+        home.join(path.trim_start_matches('~').trim_start_matches('/'))
+    } else {
+        PathBuf::from(path)
+    };
+    if expanded.is_absolute() {
+        Ok(expanded)
+    } else {
+        bail!("mount path '{path}' is not absolute");
+    }
+}
+
+// One entry of `run.mount`, written the way docker and podman spell a share: up to three
+// ':' separated fields, "<host path>:<path inside the container>:<ro|rw>". Leaving the middle field
+// out keeps the path's own name inside the container:
+//
+//   "dir"             shared read-write at the same path
+//   "dir:ro"          shared read-only at the same path
+//   "dir1:dir2"       dir1 shared read-write, as dir2 inside
+//   "dir1:dir2:ro"    dir1 shared read-only, as dir2 inside
+//
+// A path inside the container is always absolute, so a middle field of just "ro" or "rw" can only
+// be the flag. Returned as (host path, path inside the container, read-only).
+fn parse_mount(entry: &str) -> Result<(&str, &str, bool)> {
+    let fields: Vec<&str> = entry.split(':').collect();
+    let (source, destination, access) = match fields.as_slice() {
+        [source] => (*source, *source, None),
+        [source, access @ ("ro" | "rw")] => (*source, *source, Some(*access)),
+        [source, destination] => (*source, *destination, None),
+        [source, destination, access] => (*source, *destination, Some(*access)),
+        _ => bail!("mount '{entry}' has more than three ':' separated fields"),
+    };
+    let readonly = match access {
+        Some("ro") => true,
+        None | Some("rw") => false,
+        Some(access) => bail!("mount '{entry}': expected 'ro' or 'rw', not '{access}'"),
+    };
+    Ok((source, destination, readonly))
+}
+
+// Create a host path that is shared but does not exist yet, so that a tool can be given its config
+// before it has written any. A bind mount needs a file to share for a file and a directory for a
+// directory, and a path that is not there says nothing about which it should be, so the definition
+// tells us: a trailing '/' asks for a directory, anything else for an empty file.
+fn create_source(path: &Path, as_dir: bool) -> Result<()> {
+    if as_dir {
+        return std::fs::create_dir_all(path)
+            .with_context(|| format!("creating {}", path.display()));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    File::create(path).with_context(|| format!("creating {}", path.display()))?;
+    Ok(())
+}
+
+// The extra host paths an app shares, as (host path, path inside the container, read-only) triples.
+// Shares are read-write unless the definition says otherwise. A path that exists is shared as
+// whatever it is, file or directory; a missing one is created, unless it is shared read-only, where
+// an empty path is never what the definition meant.
+fn extra_mounts(run: &RunConfig) -> Result<Vec<(PathBuf, PathBuf, bool)>> {
+    let mut mounts = Vec::new();
+    for entry in &run.mount {
+        let (source, destination, readonly) = parse_mount(entry)?;
+        let as_dir = source.ends_with('/');
+        let source = expand_path(source)?;
+        if source == Path::new("/") {
+            bail!("refusing to mount / (the whole host filesystem) into the container");
+        }
+        if !source.exists() {
+            if readonly {
+                bail!(
+                    "{} does not exist and is shared read-only",
+                    source.display()
+                );
+            }
+            create_source(&source, as_dir)?;
+        }
+        mounts.push((source, expand_path(destination)?, readonly));
+    }
+    Ok(mounts)
+}
+
 // Stop the working directory share from handing over far more than intended. Started from `/`,
 // it would share the whole host filesystem read-write and hide the image's own files, so refuse.
 // Started from the home directory, it would expose everything in it (~/.ssh, keyrings, ...)
@@ -168,6 +257,13 @@ pub fn mountpoints(cfg: &AppConfig) -> Result<Vec<MountPoint>> {
         .collect();
     if let Some(host) = host_dir(run)? {
         points.push(MountPoint::dir(host));
+    }
+    for (source, destination, _) in extra_mounts(run)? {
+        points.push(if source.is_file() {
+            MountPoint::file(destination)
+        } else {
+            MountPoint::dir(destination)
+        });
     }
     for file in host_net_files(run) {
         points.push(MountPoint::file(file));
@@ -237,6 +333,9 @@ pub fn build(
     }
     if let Some(host) = host_dir(run)? {
         mounts.push(bind(&host, &host, false)?);
+    }
+    for (source, destination, readonly) in extra_mounts(run)? {
+        mounts.push(bind(&source, &destination, readonly)?);
     }
     for file in host_net_files(run) {
         mounts.push(bind(&file, &file, true)?);

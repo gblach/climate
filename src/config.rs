@@ -88,6 +88,12 @@ pub struct RunConfig {
     #[serde(default = "yes")]
     pub cwd: bool,
 
+    // Extra host paths to share, beyond the working directory, meant above all for a tool's config
+    // directory or file. Each entry is "source", "source:destination", or either with a trailing
+    // ":ro" or ":rw"; see `parse_mount`.
+    #[serde(default)]
+    pub mount: Vec<String>,
+
     #[serde(default)]
     pub network: Network,
 }
@@ -99,6 +105,7 @@ impl Default for RunConfig {
             args: Vec::new(),
             env: Vec::new(),
             cwd: true,
+            mount: Vec::new(),
             network: Network::default(),
         }
     }
