@@ -85,7 +85,8 @@ pub fn show(app_name: &str, defaults: bool) -> Result<()> {
     }
     printer.key("args", config.run.args.into(), absent("run", "args"));
     printer.key("env", config.run.env.into(), absent("run", "env"));
-    printer.key("mount-cwd",
+    printer.key(
+        "mount-cwd",
         config.run.mount_cwd.into(),
         absent("run", "mount-cwd"),
     );
