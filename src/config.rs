@@ -287,7 +287,7 @@ fn fetch(repo: &Repository, url: &str, opts: &FetchOptions) -> Result<FetchOutco
     }
 }
 
-// How the checked-out files changed in one sync.
+// How the checked-out app definitions changed in one sync.
 struct SyncCounts {
     added: usize,
     changed: usize,
@@ -295,7 +295,8 @@ struct SyncCounts {
 }
 
 // Fetch the newest commit of the apps repository (depth 1, so no history is downloaded) and update
-// the checked-out files to match it. Returns how many files that added, changed and removed.
+// the checked-out files to match it. Returns how many app definitions that added, changed and
+// removed.
 fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<SyncCounts> {
     let opts = FetchOptions {
         refspecs: vec![FETCH_REFSPEC.to_string()],
@@ -351,6 +352,11 @@ fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<SyncCounts> {
         removed: 0,
     };
     for change in &changes {
+        // Only the .toml files are app definitions; other files in the repository (README and the
+        // like) are not worth reporting.
+        if !change.path().ends_with(".toml") {
+            continue;
+        }
         match change.status {
             DiffStatus::Added | DiffStatus::Copied => counts.added += 1,
             DiffStatus::Deleted => counts.removed += 1,
