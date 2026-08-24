@@ -330,7 +330,7 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
     let mut container = builder
         .as_init(&bundle)
         .with_systemd(true)
-        .with_detach(false)
+        .with_detach(console.is_some())
         .build()
         .context("creating the container")?;
 
