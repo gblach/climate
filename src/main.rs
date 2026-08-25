@@ -38,7 +38,7 @@ enum Command {
 #[argp(subcommand, name = "clean")]
 struct CleanCmd {}
 
-/// Create symlinks next to the climate binary so apps can be started by their own name (e.g.
+/// Create symlinks next to the CLImate binary so apps can be started by their own name (e.g.
 /// an `ffmpeg` symlink that runs `climate run ffmpeg`).
 #[derive(FromArgs)]
 #[argp(subcommand, name = "link")]
@@ -132,7 +132,7 @@ fn link(cmd: &LinkCmd) -> Result<()> {
         cmd.apps.clone()
     };
 
-    let exe = std::env::current_exe().context("resolving the climate executable")?;
+    let exe = std::env::current_exe().context("resolving the CLImate executable")?;
     let dir = exe.parent().expect("executable path has a parent");
     let exe_name = exe.file_name().expect("executable path has a file name");
     // Point the symlinks at the bare binary name instead of a full path, so they keep working
@@ -199,7 +199,7 @@ fn main() -> Result<()> {
 
     let cli: Cli = argp::parse_args_or_exit(argp::DEFAULT);
     if cli.version {
-        println!("climate {}", env!("CARGO_PKG_VERSION"));
+        println!("CLImate {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let Some(command) = cli.command else {

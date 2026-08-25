@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily refresh of downloaded climate images
+Description=Daily refresh of downloaded CLImate images
 
 [Timer]
 OnCalendar=daily

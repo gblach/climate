@@ -1,15 +1,15 @@
-# climate
+# CLImate
 
 > Your CLI's new mate: run containerized command-line tools like they're installed natively. Think
 > Flatpak, but for the terminal.
 
 Each app is described by a TOML file that says how to fetch its image and how to run it. When
-an app shares a directory from your computer (your working directory or your home), `climate` runs
+an app shares a directory from your computer (your working directory or your home), CLImate runs
 the tool as you, at the same path, so the files it reads and writes stay yours.
 
 ## Requirements
 
-`climate` mounts image layers with `fuse-overlayfs` and unmounts them with `fusermount3`, so both
+CLImate mounts image layers with `fuse-overlayfs` and unmounts them with `fusermount3`, so both
 have to be installed. `fusermount3` comes with `fuse3`, which every `fuse-overlayfs` package depends
 on:
 
@@ -156,8 +156,8 @@ in a higher-precedence directory overrides one of the same name below it.
 
 ## How it works
 
-`climate` is a self-contained container engine: it pulls an app's image, mounts the layers, and runs
-the container in-process. There is no `podman`, `crun`, or `skopeo` to install - `climate`
+CLImate is a self-contained container engine: it pulls an app's image, mounts the layers, and runs
+the container in-process. There is no `podman`, `crun`, or `skopeo` to install - CLImate
 is a single binary, next to the `fuse-overlayfs` and `fusermount3` helpers listed under
 Requirements.
 

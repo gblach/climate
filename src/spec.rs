@@ -367,7 +367,7 @@ pub fn build(
     // is where the runtime executes hooks. The hook runs this same binary again;
     // see `bring_loopback_up`.
     if run.network == Network::Localhost {
-        let exe = std::env::current_exe().context("resolving the climate executable")?;
+        let exe = std::env::current_exe().context("resolving the CLImate executable")?;
         let hook = HookBuilder::default()
             .path(exe)
             .args(vec!["climate".to_string(), LOOPBACK_HOOK_ARG.to_string()])

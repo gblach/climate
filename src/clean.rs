@@ -24,7 +24,7 @@ fn entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
     }
 }
 
-// Read the pid of the climate process that created a runtime directory out of its name:
+// Read the pid of the CLImate process that created a runtime directory out of its name:
 // "climate-<pid>-<nanos>", or "<pid>-<nanos>" for overlay directories.
 fn pid_of(name: &str, prefix: &str) -> Option<i32> {
     name.strip_prefix(prefix)?.split('-').next()?.parse().ok()
@@ -162,7 +162,7 @@ fn is_mounted(path: &Path) -> bool {
         .any(|mount_point| mount_point == path)
 }
 
-// Clean up after runs whose climate process no longer exists, which happens when a run is killed
+// Clean up after runs whose CLImate process no longer exists, which happens when a run is killed
 // outright. Runs still alive are in progress and left alone.
 fn prune_runtime() -> Result<()> {
     let base = crate::runtime::runtime_dir();
