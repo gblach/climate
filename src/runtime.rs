@@ -293,6 +293,25 @@ impl Drop for ResizeForwarder {
     }
 }
 
+// Whether a descriptor leads to the null device. This is the comparison youki itself makes when
+// it decides to re-point one of the standard streams at the container's own /dev/null.
+fn is_dev_null(fd: impl AsFd) -> bool {
+    match (rustix::fs::fstat(fd), rustix::fs::stat("/dev/null")) {
+        (Ok(stream), Ok(null)) => stream.st_rdev == null.st_rdev,
+        _ => false,
+    }
+}
+
+// A writable stand-in for a stream of ours that leads to /dev/null. youki re-opens such a stream
+// against the container's own /dev/null but does so read-only, leaving the app a descriptor it
+// cannot write to. A pipe is not recognised as /dev/null, so it is passed through untouched; a
+// thread reads the other end and drops what it gets, which is what /dev/null would have done.
+fn discard_pipe() -> Result<OwnedFd> {
+    let (reader, writer) = pipe_with(PipeFlags::CLOEXEC).context("creating a discard pipe")?;
+    std::thread::spawn(move || copy(File::from(reader), std::io::sink()));
+    Ok(writer)
+}
+
 // Create the container described by `spec`, run it until it finishes, and return its exit code.
 // With `tty` the container gets its own terminal, whose other end is copied to and from our stdin
 // and stdout; without it it uses this process's streams. Everything the run created is deleted
@@ -326,6 +345,14 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
         .context("setting the container state path")?;
     if let Some(console) = &console {
         builder = builder.with_console_socket(Some(console.path()));
+    }
+    // Streams have to be swapped before the container is built; see discard_pipe. Stdin is left
+    // alone, as a read-only descriptor is what it should be anyway.
+    if is_dev_null(std::io::stdout()) {
+        builder = builder.with_stdout(discard_pipe()?);
+    }
+    if is_dev_null(std::io::stderr()) {
+        builder = builder.with_stderr(discard_pipe()?);
     }
     let mut container = builder
         .as_init(&bundle)
