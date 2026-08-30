@@ -101,9 +101,9 @@ climate clean                   # free the space of unused images, clean up afte
 
 ## Automatic updates
 
-A systemd user timer can refresh your downloaded images daily (it runs `climate pull --update`,
-which only touches apps you have already pulled). Install the units from `systemd/` and enable
-the timer:
+A systemd user timer can refresh your downloaded images daily (it runs `climate sync` to update app
+definitions, followed by `climate pull --update` to refresh images for apps you have already
+pulled). Install the units from `systemd/` and enable the timer:
 
 ```sh
 mkdir -p ~/.config/systemd/user

@@ -5,4 +5,5 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+ExecStart=%h/.local/bin/climate sync
 ExecStart=%h/.local/bin/climate pull --update
