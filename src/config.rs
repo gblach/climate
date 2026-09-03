@@ -10,7 +10,7 @@ use grit_lib::transfer::{FetchOptions, FetchOutcome};
 use grit_lib::transport::http::http_fetch;
 use grit_lib::transport::http::ureq_client::UreqHttpClient;
 use grit_lib::transport::{ConnectOptions, Service, SshTransport, Transport, is_ssh_url};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de};
 use std::collections::BTreeSet;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -29,6 +29,8 @@ pub struct AppConfig {
     pub image: ImageConfig,
     #[serde(default)]
     pub run: RunConfig,
+    #[serde(default)]
+    pub limits: LimitsConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,8 +114,57 @@ impl Default for RunConfig {
     }
 }
 
+// How much of the machine one run may take, enforced by the kernel through cgroup v2. A limit
+// left out is not enforced, so by default a tool gets the whole machine, as it would natively.
+#[derive(Debug, Default, Deserialize)]
+pub struct LimitsConfig {
+    // Memory ceiling: a byte count with an optional binary suffix, "512M", "2G", or a bare
+    // number, 1048576. An app that goes over it is killed, unless it has swap to spill into.
+    #[serde(default, deserialize_with = "size")]
+    pub memory: Option<String>,
+
+    // Swap allowed on top of `memory`, written the same way. "0" is what makes `memory` a ceiling
+    // the app cannot slip past.
+    #[serde(default, deserialize_with = "size")]
+    pub swap: Option<String>,
+
+    // A second, lower mark. Past it the app is throttled by reclaim pressure instead of killed,
+    // so one that overshoots slows down rather than dying.
+    #[serde(rename = "memory-high", default, deserialize_with = "size")]
+    pub memory_high: Option<String>,
+
+    // CPU time in cores: 1.5 allows one and a half cores' worth per second. The app may still
+    // spread over more cores, it just may not run for longer in total.
+    #[serde(default)]
+    pub cpu: Option<f64>,
+
+    // Share of a contended CPU, against 1024 for an ordinary process. It does nothing on an idle
+    // machine, and youki rescales the number, so its effect is not proportional to it.
+    #[serde(rename = "cpu-shares", default)]
+    pub cpu_shares: Option<i64>,
+
+    // How many processes and threads the app may have at once.
+    #[serde(default)]
+    pub pids: Option<i64>,
+}
+
 fn yes() -> bool {
     true
+}
+
+// A memory size, written either as a string with a unit, "512M", or as a bare number of bytes.
+// Both are handed on as a string, which is what `parse_memory` reads. Reading the value as a
+// toml::Value first is what keeps TOML's own integers and floats apart, so 1.5 is refused here
+// rather than being rounded into a byte count.
+fn size<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    match Option::<toml::Value>::deserialize(deserializer)? {
+        Some(toml::Value::Integer(bytes)) => Ok(Some(bytes.to_string())),
+        Some(toml::Value::String(text)) => Ok(Some(text)),
+        Some(other) => Err(de::Error::custom(format!(
+            "expected a byte count or a size like \"512M\", found {other}"
+        ))),
+        None => Ok(None),
+    }
 }
 
 // Directories searched for app definitions; the first match wins: the override directory

@@ -154,6 +154,50 @@ states.
 You can also drop entirely new `*.toml` files into any of these directories. A definition
 in a higher-precedence directory overrides one of the same name below it.
 
+## Resource limits
+
+An app can cap how much of the machine it takes in a `[limits]` section:
+
+```toml
+[limits]
+memory = "2G"        # memory ceiling
+swap = "0"           # swap on top of it; "0" makes the ceiling hard
+memory-high = "1G"   # slow the app down here instead of killing it at the ceiling
+cpu = 1.5            # CPU cores' worth of time per second
+cpu-shares = 512     # share of a contended CPU, against 1024 for an ordinary process
+pids = 512           # processes and threads at once
+```
+
+| Key           | Type             | Unit                | Example  |
+| ------------- | ---------------- | ------------------- | -------- |
+| `memory`      | string or number | bytes               | `"512M"` |
+| `swap`        | string or number | bytes               | `"0"`    |
+| `memory-high` | string or number | bytes               | `"256M"` |
+| `cpu`         | number           | CPU cores           | `1.5`    |
+| `cpu-shares`  | number           | relative share      | `512`    |
+| `pids`        | number           | processes + threads | `512`    |
+
+Every key is optional, and a key left out is not limited at all, so definitions without a
+`[limits]` section keep running exactly as before.
+
+Sizes are a byte count with an optional binary unit - `K`, `M`, `G` or `T`, where `M` means
+1024 * 1024. `MB` and `MiB` spell the same unit; no unit at all means plain bytes. A size with no
+unit can be written as a plain number instead of a string, so `memory = 536870912` and
+`memory = "512M"` mean the same thing.
+
+Two things about memory are worth knowing. `memory` on its own is not the ceiling it looks like:
+an app that grows past it is pushed into swap rather than killed, and `swap = "0"` is what closes
+that. And `memory-high` needs somewhere to reclaim pages to, so pairing the two leaves it little
+to work with when the app's memory is mostly files it wrote under `/tmp` - such an app is killed
+at `memory` anyway.
+
+`cpu` caps total CPU time, not how many cores the app spreads over. `cpu-shares` only matters
+while something else wants the CPU, and youki rescales the number, so `512` does not mean half.
+
+The limits are applied to the container's systemd scope in your user session, which is what makes
+them work without root. Only `cpu`, `memory` and `pids` are delegated to a user session, so there
+are no keys for CPU pinning or disk I/O.
+
 ## How it works
 
 CLImate is a self-contained container engine: it pulls an app's image, mounts the layers, and runs
@@ -166,4 +210,5 @@ Containers run rootless, as your own user and with no extra privileges:
 - The image filesystem is read-only. Writable space is provided at `/tmp`, `/run`, and `/var/tmp`,
   plus any host directory an app mounts.
 - Networking is configured per app: full host access, none, or localhost only.
-- There are no resource limits, so a tool runs as it would natively.
+- Resource limits are configured per app and enforced by the kernel through cgroup v2. An app that
+  sets none runs with the whole machine available, as it would natively.

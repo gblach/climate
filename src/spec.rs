@@ -1,15 +1,17 @@
 use anyhow::{Context, Result, bail};
 use oci_spec::image::{Config as ImageExecConfig, ImageConfiguration};
 use oci_spec::runtime::{
-    HookBuilder, HooksBuilder, LinuxNamespaceBuilder, LinuxNamespaceType, Mount, MountBuilder,
-    ProcessBuilder, RootBuilder, Spec,
+    HookBuilder, HooksBuilder, LinuxCpuBuilder, LinuxMemoryBuilder, LinuxNamespaceBuilder,
+    LinuxNamespaceType, LinuxPidsBuilder, LinuxResources, LinuxResourcesBuilder, Mount,
+    MountBuilder, PosixRlimit, ProcessBuilder, RootBuilder, Spec,
 };
 use rustix::net::{AddressFamily, SocketType, socket};
+use std::collections::HashMap;
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use crate::config::{AppConfig, Entrypoint, Network, RunConfig};
+use crate::config::{AppConfig, Entrypoint, LimitsConfig, Network, RunConfig};
 use crate::runtime::MountPoint;
 
 // PATH used when the image itself does not define one.
@@ -28,9 +30,138 @@ const DEFAULT_MOUNT_DIRS: [&str; 3] = ["/proc", "/dev", "/sys"];
 // the same inside and outside the container.
 const HOST_NET_FILES: [&str; 2] = ["/etc/resolv.conf", "/etc/hosts"];
 
+// The window a CPU quota is measured over, in microseconds: a quota of half it allows half
+// a core. 100 ms is the kernel's own default.
+const CPU_PERIOD: u64 = 100_000;
+
+// The scale docker and podman use for CPU shares, where an ordinary process sits at 1024.
+// youki rescales it onto the 1-10000 range cgroup v2 stores.
+const CPU_SHARES_RANGE: std::ops::RangeInclusive<i64> = 2..=262_144;
+
 // Marker argument this binary passes to itself when the container runtime calls it to bring
 // the container's loopback interface up.
 pub const LOOPBACK_HOOK_ARG: &str = "__lo-up";
+
+// A memory size from an app definition: bytes, with an optional binary unit, so "1M" is
+// 1024 * 1024. "MB" and "MiB" spell the same unit. Zero is allowed for `swap`'s sake; the sizes
+// that cannot be zero go through `parse_size`.
+fn parse_memory(key: &str, value: &str) -> Result<i64> {
+    let digits = value.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    let amount: i64 = digits
+        .parse()
+        .with_context(|| format!("{key} limit '{value}' is not a whole number of bytes"))?;
+    if amount < 0 {
+        bail!("{key} limit '{value}' must not be negative");
+    }
+
+    let unit = value[digits.len()..].to_ascii_lowercase();
+    let multiplier: i64 = match unit.as_str() {
+        "" | "b" => 1,
+        "k" | "kb" | "kib" => 1024,
+        "m" | "mb" | "mib" => 1024 * 1024,
+        "g" | "gb" | "gib" => 1024 * 1024 * 1024,
+        "t" | "tb" | "tib" => 1024 * 1024 * 1024 * 1024,
+        _ => bail!("{key} limit '{value}': '{unit}' is not a known unit (b, k, m, g, t)"),
+    };
+    amount
+        .checked_mul(multiplier)
+        .with_context(|| format!("{key} limit '{value}' is too large"))
+}
+
+// A memory size that must name a real amount, so zero is refused too.
+fn parse_size(key: &str, value: &str) -> Result<i64> {
+    let size = parse_memory(key, value)?;
+    if size == 0 {
+        bail!("{key} limit '{value}' must be greater than zero");
+    }
+    Ok(size)
+}
+
+// The app's limits as the runtime spec states them, or None when it sets none, which leaves the
+// container in the cgroup settings any other program of the user's gets. youki turns these into
+// properties of the container's systemd scope: MemoryMax, MemorySwapMax, MemoryHigh,
+// CPUQuotaPerSecUSec, CPUWeight and TasksMax.
+fn resources(limits: &LimitsConfig) -> Result<Option<LinuxResources>> {
+    let nothing_set = limits.memory.is_none()
+        && limits.swap.is_none()
+        && limits.memory_high.is_none()
+        && limits.cpu.is_none()
+        && limits.cpu_shares.is_none()
+        && limits.pids.is_none();
+    if nothing_set {
+        return Ok(None);
+    }
+
+    let mut builder = LinuxResourcesBuilder::default();
+    let memory = limits
+        .memory
+        .as_deref()
+        .map(|value| parse_size("memory", value))
+        .transpose()?;
+
+    if let Some(memory) = memory {
+        let mut settings = LinuxMemoryBuilder::default().limit(memory);
+        // The runtime spec states swap as memory and swap added together, a definition states
+        // swap on its own, so the memory limit is added here - and is why swap needs one.
+        if let Some(swap) = &limits.swap {
+            let swap = parse_memory("swap", swap)?;
+            settings = settings.swap(
+                memory
+                    .checked_add(swap)
+                    .context("the memory and swap limits added together are too large")?,
+            );
+        }
+        builder = builder.memory(settings.build().context("building the memory limit")?);
+    } else if let Some(swap) = &limits.swap {
+        bail!("swap limit '{swap}' needs a memory limit to sit on top of");
+    }
+
+    // The runtime spec has no field for this mark, so it goes through the passthrough map.
+    if let Some(value) = &limits.memory_high {
+        let high = parse_size("memory-high", value)?;
+        if memory.is_some_and(|memory| high >= memory) {
+            bail!("memory-high '{value}' must be below the memory limit to have any effect");
+        }
+        builder = builder.unified(HashMap::from([(
+            "memory.high".to_string(),
+            high.to_string(),
+        )]));
+    }
+
+    if limits.cpu.is_some() || limits.cpu_shares.is_some() {
+        let mut settings = LinuxCpuBuilder::default();
+        if let Some(cpu) = limits.cpu {
+            if cpu <= 0.0 || cpu.is_nan() {
+                bail!("cpu limit {cpu} must be greater than zero");
+            }
+            settings = settings
+                .quota((cpu * CPU_PERIOD as f64).round() as i64)
+                .period(CPU_PERIOD);
+        }
+        if let Some(shares) = limits.cpu_shares {
+            if !CPU_SHARES_RANGE.contains(&shares) {
+                let (low, high) = (CPU_SHARES_RANGE.start(), CPU_SHARES_RANGE.end());
+                bail!("cpu-shares {shares} must be between {low} and {high}");
+            }
+            settings = settings.shares(shares as u64);
+        }
+        builder = builder.cpu(settings.build().context("building the cpu limit")?);
+    }
+
+    if let Some(pids) = limits.pids {
+        if pids <= 0 {
+            bail!("pids limit {pids} must be greater than zero");
+        }
+        builder = builder.pids(
+            LinuxPidsBuilder::default()
+                .limit(pids)
+                .build()
+                .context("building the pids limit")?,
+        );
+    }
+
+    Ok(Some(builder.build().context("building resource limits")?))
+}
 
 // Assemble the command line to run, following the same rules as docker and podman: an entrypoint
 // set by the app definition replaces both the image's entrypoint and its default command; otherwise
@@ -323,6 +454,10 @@ pub fn build(
             .args(argv)
             .env(environment(run, image_config))
             .no_new_privileges(true)
+            // An empty list, not "no list": left unset, the builder fills in the spec's default
+            // of 1024 open files, soft and hard, which a tool cannot raise and would hit long
+            // before it does natively. Empty leaves the container the limits we were started with.
+            .rlimits(Vec::<PosixRlimit>::new())
             .build()
             .context("building process")?,
     ));
@@ -361,6 +496,7 @@ pub fn build(
             linux.set_namespaces(Some(namespaces));
         }
     }
+    linux.set_resources(resources(&cfg.limits)?);
     spec.set_linux(Some(linux));
 
     // The loopback interface has to be enabled from inside the new network namespace, which

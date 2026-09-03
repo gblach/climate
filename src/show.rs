@@ -50,6 +50,15 @@ impl Printer {
             println!("{line}");
         }
     }
+
+    // A limit the file leaves out has no default value to show, so say what its absence means
+    // in a comment instead of inventing one.
+    fn limit(&self, key: &str, value: Option<toml::Value>, unset: &str) {
+        match value {
+            Some(value) => self.key(key, value, false),
+            None => self.defaulted(format!("# {key} is unset: {unset}")),
+        }
+    }
 }
 
 pub fn show(app_name: &str, defaults: bool) -> Result<()> {
@@ -95,6 +104,41 @@ pub fn show(app_name: &str, defaults: bool) -> Result<()> {
         "network",
         network_value(&config.run.network),
         absent("run", "network"),
+    );
+
+    // Like [run], the header only makes sense if a line follows it.
+    if defaults || table("limits").is_some_and(|table| !table.is_empty()) {
+        println!("\n[limits]");
+    }
+    printer.limit(
+        "memory",
+        config.limits.memory.map(Into::into),
+        "the app may use as much memory as it likes",
+    );
+    printer.limit(
+        "swap",
+        config.limits.swap.map(Into::into),
+        "the app may swap as much as it likes",
+    );
+    printer.limit(
+        "memory-high",
+        config.limits.memory_high.map(Into::into),
+        "the app is never throttled, only killed at the memory limit",
+    );
+    printer.limit(
+        "cpu",
+        config.limits.cpu.map(Into::into),
+        "the app may use every core",
+    );
+    printer.limit(
+        "cpu-shares",
+        config.limits.cpu_shares.map(Into::into),
+        "the app competes for the CPU on equal terms",
+    );
+    printer.limit(
+        "pids",
+        config.limits.pids.map(Into::into),
+        "the app may start as many processes as it likes",
     );
     Ok(())
 }
