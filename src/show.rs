@@ -1,4 +1,4 @@
-use crate::config::{AppConfig, Entrypoint, Network};
+use crate::config::{AppConfig, Capability, Entrypoint, Network};
 use anyhow::Result;
 use std::io::IsTerminal;
 
@@ -19,6 +19,12 @@ fn network_value(network: &Network) -> toml::Value {
         Network::Localhost => "localhost",
     };
     toml::Value::from(name)
+}
+
+// Capability names as a definition writes them, without the "CAP_" prefix.
+fn capabilities_value(capabilities: &[Capability]) -> toml::Value {
+    let names: Vec<String> = capabilities.iter().map(ToString::to_string).collect();
+    toml::Value::from(names)
 }
 
 struct Printer {
@@ -104,6 +110,11 @@ pub fn show(app_name: &str, defaults: bool) -> Result<()> {
         "network",
         network_value(&config.run.network),
         absent("run", "network"),
+    );
+    printer.key(
+        "capabilities",
+        capabilities_value(&config.run.capabilities),
+        absent("run", "capabilities"),
     );
 
     // Like [run], the header only makes sense if a line follows it.

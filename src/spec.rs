@@ -1,9 +1,10 @@
 use anyhow::{Context, Result, bail};
 use oci_spec::image::{Config as ImageExecConfig, ImageConfiguration};
 use oci_spec::runtime::{
-    HookBuilder, HooksBuilder, LinuxCpuBuilder, LinuxMemoryBuilder, LinuxNamespaceBuilder,
-    LinuxNamespaceType, LinuxPidsBuilder, LinuxResources, LinuxResourcesBuilder, Mount,
-    MountBuilder, PosixRlimit, ProcessBuilder, RootBuilder, Spec,
+    Capabilities, HookBuilder, HooksBuilder, LinuxCapabilities, LinuxCapabilitiesBuilder,
+    LinuxCpuBuilder, LinuxMemoryBuilder, LinuxNamespaceBuilder, LinuxNamespaceType,
+    LinuxPidsBuilder, LinuxResources, LinuxResourcesBuilder, Mount, MountBuilder, PosixRlimit,
+    ProcessBuilder, RootBuilder, Spec,
 };
 use rustix::net::{AddressFamily, SocketType, socket};
 use std::collections::HashMap;
@@ -402,6 +403,23 @@ pub fn mountpoints(cfg: &AppConfig) -> Result<Vec<MountPoint>> {
     Ok(points)
 }
 
+// The capabilities a container holds: none, unless its definition asks for some. All five sets are
+// named and all get the same list. A set the spec leaves out is not emptied - youki does that for
+// the bounding set alone and leaves the rest holding everything the user namespace can grant - and
+// naming a narrower one would only look narrower, as the app runs as root there and exec rebuilds
+// the other sets from the bounding set.
+fn capabilities(run: &RunConfig) -> Result<LinuxCapabilities> {
+    let wanted: Capabilities = run.capabilities.iter().copied().collect();
+    LinuxCapabilitiesBuilder::default()
+        .bounding(wanted.clone())
+        .effective(wanted.clone())
+        .inheritable(wanted.clone())
+        .permitted(wanted.clone())
+        .ambient(wanted)
+        .build()
+        .context("building capabilities")
+}
+
 // Build the description of one container run that the runtime consumes: the read-only root
 // filesystem, the command, environment and start directory, the user and isolation settings,
 // and the mounts.
@@ -454,6 +472,9 @@ pub fn build(
             .args(argv)
             .env(environment(run, image_config))
             .no_new_privileges(true)
+            // Left unset, the builder would fill in the spec's default of AUDIT_WRITE, KILL and
+            // NET_BIND_SERVICE, which almost no tool needs.
+            .capabilities(capabilities(run)?)
             // An empty list, not "no list": left unset, the builder fills in the spec's default
             // of 1024 open files, soft and hard, which a tool cannot raise and would hit long
             // before it does natively. Empty leaves the container the limits we were started with.

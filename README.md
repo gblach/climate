@@ -154,6 +154,20 @@ states.
 You can also drop entirely new `*.toml` files into any of these directories. A definition
 in a higher-precedence directory overrides one of the same name below it.
 
+## Capabilities
+
+Containers hold no capabilities. An app that genuinely needs one lists it in `[run]`:
+
+```toml
+[run]
+capabilities = ["NET_BIND_SERVICE"]   # bind ports below 1024
+```
+
+Names drop the kernel's `CAP_` prefix and ignore case. A capability reaches only as far as the
+container's own user namespace, so it grants nothing over the host, and most do nothing at all: the
+[app definition format](https://github.com/gblach/climate-apps/blob/main/README.md) lists all 41
+names and which of them have any effect.
+
 ## Resource limits
 
 An app can cap how much of the machine it takes in a `[limits]` section:
@@ -212,3 +226,5 @@ Containers run rootless, as your own user and with no extra privileges:
 - Networking is configured per app: full host access, none, or localhost only.
 - Resource limits are configured per app and enforced by the kernel through cgroup v2. An app that
   sets none runs with the whole machine available, as it would natively.
+- Containers hold no capabilities, not even the three an OCI runtime grants by default. An app
+  that needs one asks for it by name in its definition.

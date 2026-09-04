@@ -10,6 +10,7 @@ use grit_lib::transfer::{FetchOptions, FetchOutcome};
 use grit_lib::transport::http::http_fetch;
 use grit_lib::transport::http::ureq_client::UreqHttpClient;
 use grit_lib::transport::{ConnectOptions, Service, SshTransport, Transport, is_ssh_url};
+pub use oci_spec::runtime::Capability;
 use serde::{Deserialize, Deserializer, de};
 use std::collections::BTreeSet;
 use std::io::IsTerminal;
@@ -99,6 +100,12 @@ pub struct RunConfig {
 
     #[serde(default)]
     pub network: Network,
+
+    // Capabilities the app needs; it gets none by default. Named without the kernel's "CAP_"
+    // prefix: "NET_BIND_SERVICE". They reach only as far as the container's own user namespace,
+    // so they grant nothing over the host.
+    #[serde(default)]
+    pub capabilities: Vec<Capability>,
 }
 
 impl Default for RunConfig {
@@ -110,6 +117,7 @@ impl Default for RunConfig {
             mount_cwd: true,
             mount: Vec::new(),
             network: Network::default(),
+            capabilities: Vec::new(),
         }
     }
 }
