@@ -63,8 +63,8 @@ pub enum Entrypoint {
 
 // How much network the container gets. `Full` uses the host's own network, so the app reaches
 // the internet just like the user does. The other two give it a private, empty network: `None` (the
-// default) has no working interface at all, `Localhost` enables 127.0.0.1 only, so the app can talk
-// just to itself.
+// default) has no working interface at all, `Localhost` enables 127.0.0.1 and bridges it to the
+// host's, so each side reaches the other's services and neither reaches anything further.
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Network {
@@ -315,7 +315,8 @@ impl AppConfig {
             && std::io::stderr().is_terminal();
 
         let spec = crate::spec::build(self, &image.config, mount.root(), user_args, uid, gid, tty)?;
-        let code = crate::runtime::run(spec, tty)?;
+        let localhost = self.run.network == Network::Localhost;
+        let code = crate::runtime::run(spec, tty, localhost)?;
 
         // Dropping the mount unmounts it; process::exit below would skip that.
         drop(mount);

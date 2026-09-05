@@ -154,6 +154,36 @@ states.
 You can also drop entirely new `*.toml` files into any of these directories. A definition
 in a higher-precedence directory overrides one of the same name below it.
 
+## Networking
+
+An app picks one of three modes in `[run]`:
+
+```toml
+[run]
+network = "localhost"
+```
+
+| Mode        | What the app can reach                          |
+| ----------- | ----------------------------------------------- |
+| `none`      | nothing; the default                            |
+| `full`      | the host's own network, so the internet as well |
+| `localhost` | services on the host's loopback, nothing else   |
+
+`localhost` still gives the container a private network of its own - no LAN, no internet. What it
+adds is a bridge between the two loopbacks, both ways: a port the host listens on is reachable at
+the same `127.0.0.1:<port>` inside the container, and a port the container listens on turns up at
+that address on the host. Nothing is listed per app; both sides are rescanned once a second, so a
+service that starts or stops is picked up a moment later.
+
+Three limits are worth knowing:
+
+- A port the host already listens on is taken inside the container too, so an app cannot bind it
+  for itself. Give the app another port, or run it with `network = "none"`.
+- The reverse mirror binds on the host as your own user, so a container service below port 1024
+  is not reachable from the host unless `net.ipv4.ip_unprivileged_port_start` allows it.
+- Only TCP is bridged, not UDP. Both `127.0.0.1` and `::1` are, and either address reaches a
+  service listening on the other, so an app need not know which one it is on.
+
 ## Capabilities
 
 Containers hold no capabilities. An app that genuinely needs one lists it in `[run]`:
@@ -223,7 +253,7 @@ Containers run rootless, as your own user and with no extra privileges:
 
 - The image filesystem is read-only. Writable space is provided at `/tmp`, `/run`, and `/var/tmp`,
   plus any host directory an app mounts.
-- Networking is configured per app: full host access, none, or localhost only.
+- Networking is configured per app: full host access, none, or a loopback bridged to the host's.
 - Resource limits are configured per app and enforced by the kernel through cgroup v2. An app that
   sets none runs with the whole machine available, as it would natively.
 - Containers hold no capabilities, not even the three an OCI runtime grants by default. An app

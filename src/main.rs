@@ -1,5 +1,6 @@
 mod clean;
 mod config;
+mod forward;
 mod pull;
 mod runtime;
 mod show;
@@ -190,11 +191,16 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Not a user-facing command: the container runtime re-runs this binary with this argument from
-    // inside the container to bring the loopback up.
-    if std::env::args().nth(1).as_deref() == Some(spec::LOOPBACK_HOOK_ARG) {
-        spec::bring_loopback_up()?;
-        return Ok(());
+    // Not user-facing commands: a run with `network = "localhost"` re-runs this binary with these
+    // arguments for the two halves of its loopback bridge. See the forward module.
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some(forward::HOOK_ARG) => {
+            let socket = args.next().context("loopback hook: missing socket path")?;
+            return forward::hook(&socket);
+        }
+        Some(forward::HELPER_ARG) => return forward::helper(),
+        _ => {}
     }
 
     let cli: Cli = argp::parse_args_or_exit(argp::DEFAULT);

@@ -1,15 +1,12 @@
 use anyhow::{Context, Result, bail};
 use oci_spec::image::{Config as ImageExecConfig, ImageConfiguration};
 use oci_spec::runtime::{
-    Capabilities, HookBuilder, HooksBuilder, LinuxCapabilities, LinuxCapabilitiesBuilder,
-    LinuxCpuBuilder, LinuxMemoryBuilder, LinuxNamespaceBuilder, LinuxNamespaceType,
-    LinuxPidsBuilder, LinuxResources, LinuxResourcesBuilder, Mount, MountBuilder, PosixRlimit,
-    ProcessBuilder, RootBuilder, Spec,
+    Capabilities, LinuxCapabilities, LinuxCapabilitiesBuilder, LinuxCpuBuilder, LinuxMemoryBuilder,
+    LinuxNamespaceBuilder, LinuxNamespaceType, LinuxPidsBuilder, LinuxResources,
+    LinuxResourcesBuilder, Mount, MountBuilder, PosixRlimit, ProcessBuilder, RootBuilder, Spec,
 };
-use rustix::net::{AddressFamily, SocketType, socket};
 use std::collections::HashMap;
 use std::fs::File;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use crate::config::{AppConfig, Entrypoint, LimitsConfig, Network, RunConfig};
@@ -38,10 +35,6 @@ const CPU_PERIOD: u64 = 100_000;
 // The scale docker and podman use for CPU shares, where an ordinary process sits at 1024.
 // youki rescales it onto the 1-10000 range cgroup v2 stores.
 const CPU_SHARES_RANGE: std::ops::RangeInclusive<i64> = 2..=262_144;
-
-// Marker argument this binary passes to itself when the container runtime calls it to bring
-// the container's loopback interface up.
-pub const LOOPBACK_HOOK_ARG: &str = "__lo-up";
 
 // A memory size from an app definition: bytes, with an optional binary unit, so "1M" is
 // 1024 * 1024. "MB" and "MiB" spell the same unit. Zero is allowed for `swap`'s sake; the sizes
@@ -505,7 +498,8 @@ pub fn build(
     match run.network {
         // With no network namespace listed the container shares the host's.
         Network::Full => {}
-        // A private network namespace, holding only a disabled loopback.
+        // A private network namespace. Its loopback starts out disabled; in `localhost` mode the
+        // hook in the forward module enables it and bridges it to the host's.
         Network::None | Network::Localhost => {
             let mut namespaces = linux.namespaces().clone().unwrap_or_default();
             namespaces.push(
@@ -520,49 +514,5 @@ pub fn build(
     linux.set_resources(resources(&cfg.limits)?);
     spec.set_linux(Some(linux));
 
-    // The loopback interface has to be enabled from inside the new network namespace, which
-    // is where the runtime executes hooks. The hook runs this same binary again;
-    // see `bring_loopback_up`.
-    if run.network == Network::Localhost {
-        let exe = std::env::current_exe().context("resolving the CLImate executable")?;
-        let hook = HookBuilder::default()
-            .path(exe)
-            .args(vec!["climate".to_string(), LOOPBACK_HOOK_ARG.to_string()])
-            .build()
-            .context("building loopback hook")?;
-        spec.set_hooks(Some(
-            HooksBuilder::default()
-                .create_container(vec![hook])
-                .build()
-                .context("building hooks")?,
-        ));
-    }
-
     Ok(spec)
-}
-
-// Enable the container's loopback interface so connections to 127.0.0.1 work. This runs
-// as a container hook, inside the container's own network namespace, where the interface exists
-// but is still disabled and where switching it on needs no privileges. The ioctl calls read
-// its flags and set the "up" bit.
-pub fn bring_loopback_up() -> Result<()> {
-    let sock = socket(AddressFamily::INET, SocketType::DGRAM, None)
-        .context("opening a socket to configure loopback")?;
-
-    let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
-    for (slot, byte) in req.ifr_name.iter_mut().zip(b"lo") {
-        *slot = *byte as libc::c_char;
-    }
-
-    let fd = sock.as_raw_fd();
-    unsafe {
-        if libc::ioctl(fd, libc::SIOCGIFFLAGS, &mut req) < 0 {
-            return Err(std::io::Error::last_os_error()).context("reading loopback flags");
-        }
-        req.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
-        if libc::ioctl(fd, libc::SIOCSIFFLAGS, &mut req) < 0 {
-            return Err(std::io::Error::last_os_error()).context("bringing loopback up");
-        }
-    }
-    Ok(())
 }

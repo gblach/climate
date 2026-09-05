@@ -18,6 +18,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::thread::JoinHandle;
 
+use crate::forward::Bridge;
 use crate::store;
 
 // Scratch directory for running containers, under $XDG_RUNTIME_DIR or the temp directory. Each
@@ -314,9 +315,9 @@ fn discard_pipe() -> Result<OwnedFd> {
 
 // Create the container described by `spec`, run it until it finishes, and return its exit code.
 // With `tty` the container gets its own terminal, whose other end is copied to and from our stdin
-// and stdout; without it it uses this process's streams. Everything the run created is deleted
-// before returning.
-pub fn run(spec: Spec, tty: bool) -> Result<i32> {
+// and stdout; without it it uses this process's streams. With `localhost` its loopback is bridged
+// to the host's for as long as it runs. Everything the run created is deleted before returning.
+pub fn run(mut spec: Spec, tty: bool, localhost: bool) -> Result<i32> {
     let base = runtime_dir();
     let id = format!("climate-{}", store::unique_id());
     let bundle = base.join("bundles").join(&id);
@@ -324,6 +325,15 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
     std::fs::create_dir_all(&bundle).with_context(|| format!("creating {}", bundle.display()))?;
     std::fs::create_dir_all(&state_root)
         .with_context(|| format!("creating {}", state_root.display()))?;
+    // The bridge has to be listening before the spec is written, because the hook it installs
+    // connects back while the container is being created.
+    let mut bridge = match localhost {
+        true => Some(Bridge::bind(&bundle)?),
+        false => None,
+    };
+    if let Some(bridge) = &bridge {
+        bridge.install_hook(&mut spec)?;
+    }
     spec.save(bundle.join("config.json"))
         .context("writing the runtime spec")?;
 
@@ -378,6 +388,11 @@ pub fn run(spec: Spec, tty: bool) -> Result<i32> {
     }
 
     let result = (|| {
+        // Started before the app is, so that a port is already reachable when it first tries.
+        let _forward = bridge
+            .take()
+            .map(|bridge| bridge.start(pid.as_raw_nonzero().get()))
+            .transpose()?;
         container.start().context("starting the container")?;
         // Switch to raw mode only now that the container has started, so any error message above
         // still comes out with normal line breaks.
