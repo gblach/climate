@@ -21,6 +21,12 @@ sudo apt install fuse-overlayfs      # Debian, Ubuntu
 Containers are managed through your systemd user session, so one has to be running (it provides
 the `dbus` session bus under `$XDG_RUNTIME_DIR`). A normal desktop or `ssh` login has one.
 
+The syscall filter described under Seccomp is applied through `libseccomp`. The released binaries
+have it built in and need nothing installed; building CLImate yourself links against the system
+copy instead, so it needs the library and its development package (`libseccomp-devel` on Fedora,
+`libseccomp-dev` on Debian and Ubuntu). Nearly every system already has the library itself, as
+systemd depends on it.
+
 ## Install
 
 Build the binary and put it on your `PATH`:
@@ -198,6 +204,32 @@ container's own user namespace, so it grants nothing over the host, and most do 
 [app definition format](https://github.com/gblach/climate-apps/blob/main/README.md) lists all 41
 names and which of them have any effect.
 
+## Seccomp
+
+Every container also runs behind a seccomp filter: a system call the filter does not name fails
+with `Operation not permitted`. The allowed calls are the ones docker and podman allow by default,
+so a call a kernel newer than that list adds is refused too. Three things differ from it:
+
+- `clone` and `unshare` are refused when they ask for a new user namespace: a process holds every
+  capability inside one it creates, so an app could hand back what the section above takes away.
+- `clone3` answers "function not implemented", which makes a C library fall back to plain `clone`.
+  Its arguments sit in memory, where a filter cannot read them, so it cannot be checked directly.
+- A call that only does anything with a capability - `chroot`, `setns`, `bpf`, `perf_event_open`
+  and the like - is allowed only if the app asked for that capability.
+
+An app that the profile stops from working names what it needs in `[run]`, and one that never
+makes a call can give it up:
+
+```toml
+[run]
+seccomp-allow = ["perf_event_open"]   # allowed on top of the profile
+seccomp-deny = ["ptrace"]             # refused although the profile allows it
+```
+
+Names are the kernel's own, with no prefix, and a name that is not a system call is an error rather
+than a line quietly doing nothing. Either key also replaces whatever rule the profile had for that
+call, so `seccomp-allow = ["unshare"]` really does hand back the user namespace route above.
+
 ## Resource limits
 
 An app can cap how much of the machine it takes in a `[limits]` section:
@@ -258,3 +290,5 @@ Containers run rootless, as your own user and with no extra privileges:
   sets none runs with the whole machine available, as it would natively.
 - Containers hold no capabilities, not even the three an OCI runtime grants by default. An app
   that needs one asks for it by name in its definition.
+- A seccomp filter allows only the system calls an ordinary tool makes, and refuses the ones that
+  would create a new user namespace, which is what would otherwise hand the capabilities back.

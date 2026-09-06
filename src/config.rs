@@ -106,6 +106,15 @@ pub struct RunConfig {
     // so they grant nothing over the host.
     #[serde(default)]
     pub capabilities: Vec<Capability>,
+
+    // Syscalls to allow on top of the built-in seccomp profile, for an app the profile stops from
+    // working. Named as the kernel names them: "perf_event_open".
+    #[serde(rename = "seccomp-allow", default)]
+    pub seccomp_allow: Vec<String>,
+
+    // Syscalls to refuse that the profile allows, written the same way.
+    #[serde(rename = "seccomp-deny", default)]
+    pub seccomp_deny: Vec<String>,
 }
 
 impl Default for RunConfig {
@@ -118,6 +127,8 @@ impl Default for RunConfig {
             mount: Vec::new(),
             network: Network::default(),
             capabilities: Vec::new(),
+            seccomp_allow: Vec::new(),
+            seccomp_deny: Vec::new(),
         }
     }
 }
@@ -264,6 +275,8 @@ impl AppConfig {
         if config.app.license.is_empty() {
             anyhow::bail!("{}: app license must not be empty", path.display());
         }
+        crate::seccomp::check_syscall_names(&config.run)
+            .with_context(|| format!("parsing {}", path.display()))?;
         Ok(config)
     }
 

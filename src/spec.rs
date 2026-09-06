@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{AppConfig, Entrypoint, LimitsConfig, Network, RunConfig};
 use crate::runtime::MountPoint;
+use crate::seccomp;
 
 // PATH used when the image itself does not define one.
 const DEFAULT_PATH: &str = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -512,6 +513,8 @@ pub fn build(
         }
     }
     linux.set_resources(resources(&cfg.limits)?);
+    // Applied by youki just before it runs the app, so the setup above is not filtered by it.
+    linux.set_seccomp(Some(seccomp::profile(run)?));
     spec.set_linux(Some(linux));
 
     Ok(spec)

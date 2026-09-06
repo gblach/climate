@@ -3,6 +3,7 @@ mod config;
 mod forward;
 mod pull;
 mod runtime;
+mod seccomp;
 mod show;
 mod spec;
 mod store;

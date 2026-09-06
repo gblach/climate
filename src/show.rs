@@ -116,6 +116,16 @@ pub fn show(app_name: &str, defaults: bool) -> Result<()> {
         capabilities_value(&config.run.capabilities),
         absent("run", "capabilities"),
     );
+    printer.key(
+        "seccomp-allow",
+        config.run.seccomp_allow.into(),
+        absent("run", "seccomp-allow"),
+    );
+    printer.key(
+        "seccomp-deny",
+        config.run.seccomp_deny.into(),
+        absent("run", "seccomp-deny"),
+    );
 
     // Like [run], the header only makes sense if a line follows it.
     if defaults || table("limits").is_some_and(|table| !table.is_empty()) {
