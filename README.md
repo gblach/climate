@@ -134,16 +134,21 @@ App definitions are loaded at runtime from these directories, highest precedence
 | `~/.local/share/climate/apps/` | synced apps (`$XDG_DATA_HOME/climate/apps/` if set)     |
 | `/usr/share/climate/apps/`     | system-wide                                             |
 
+Inside each of them a definition sits one level down, in a directory named after the first
+character of the app name: `ffmpeg` is `f/ffmpeg.toml`, `xh` is `x/xh.toml`.
+
 `climate sync` only writes the synced apps (the data directory, or `/usr/share/climate/apps/` with
 `--system`); your own definitions in `~/.config/climate/apps/` are never touched by it.
 
 Set `$CLIMATE_APPS_DIR` to a directory of your own - a checkout you are working
 on, for example - and it is searched before all the others.
 
-To customize an app, copy its `*.toml` into a higher-precedence directory and edit it there:
+To customize an app, copy its `*.toml` into a higher-precedence directory and edit it there,
+keeping the same first-character directory:
 
 ```sh
-cp ~/.local/share/climate/apps/ffmpeg.toml ~/.config/climate/apps/
+mkdir -p ~/.config/climate/apps/f
+cp ~/.local/share/climate/apps/f/ffmpeg.toml ~/.config/climate/apps/f/
 ```
 
 `climate show <app>` prints the definition that is actually in effect, with every key the file
@@ -151,14 +156,15 @@ leaves out filled in from its default and grayed out. Redirecting the output dro
 so it doubles as a starting point for your own copy:
 
 ```sh
-climate show ffmpeg > ~/.config/climate/apps/ffmpeg.toml
+climate show ffmpeg > ~/.config/climate/apps/f/ffmpeg.toml
 ```
 
 Pass `-n`/`--no-defaults` to leave the defaults out and print only what the definition itself
 states.
 
-You can also drop entirely new `*.toml` files into any of these directories. A definition
-in a higher-precedence directory overrides one of the same name below it.
+You can also drop entirely new `*.toml` files into any of these directories, under the
+first-character directory the app name calls for. A definition in a higher-precedence directory
+overrides one of the same name below it.
 
 ## Networking
 

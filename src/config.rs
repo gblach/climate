@@ -205,30 +205,38 @@ fn search_dirs() -> Vec<PathBuf> {
     paths
 }
 
-// Names of all available apps, taken from the TOML file names. The BTreeSet sorts them and drops
-// duplicates when an app exists in several directories.
+// Names of all available apps, taken from the TOML file names. Definitions sit one level down, in a
+// directory named after the first character of the app name, so every search directory is walked
+// two levels deep. The BTreeSet sorts the names and drops duplicates when an app exists in several
+// directories.
 pub fn app_names() -> Vec<String> {
     let mut app_names = BTreeSet::new();
     for dir in search_dirs() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let Ok(groups) = std::fs::read_dir(&dir) else {
             continue;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+        for group in groups.flatten() {
+            // Plain files in the search directory (README and the like) fail here and are skipped.
+            let Ok(entries) = std::fs::read_dir(group.path()) else {
                 continue;
-            }
-            if let Some(app_name) = path.file_stem().and_then(|s| s.to_str()) {
-                app_names.insert(app_name.to_string());
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                    continue;
+                }
+                if let Some(app_name) = path.file_stem().and_then(|s| s.to_str()) {
+                    app_names.insert(app_name.to_string());
+                }
             }
         }
     }
     app_names.into_iter().collect()
 }
 
-// App names end up as file names (`<name>.toml`) and as symlink names, so only harmless characters
-// are allowed. A name containing '/' could point outside the search directories, and one starting
-// with '.' would create a hidden file.
+// App names end up as file names (`<first character>/<name>.toml`) and as symlink names, so only
+// harmless characters are allowed. A name containing '/' could point outside the search
+// directories, and one starting with '.' would create a hidden file.
 fn validate_app_name(app_name: &str) -> Result<()> {
     let valid = !app_name.is_empty()
         && !app_name.starts_with('.')
@@ -243,14 +251,17 @@ fn validate_app_name(app_name: &str) -> Result<()> {
     Ok(())
 }
 
-// Find an app definition in the search directories and read it. The path is returned alongside
-// the text so error messages can name the file.
+// Find an app definition in the search directories and read it. Each directory groups its apps by
+// first character, so `xh` is looked up as `x/xh.toml`. The path is returned alongside the text so
+// error messages can name the file.
 fn read(app_name: &str) -> Result<(PathBuf, String)> {
     validate_app_name(app_name)?;
+    // The name has been validated as ASCII, so slicing off the first byte cannot split a character.
+    let group = &app_name[..1];
     let filename = format!("{app_name}.toml");
     let path = search_dirs()
         .into_iter()
-        .map(|dir| dir.join(&filename))
+        .map(|dir| dir.join(group).join(&filename))
         .find(|path| path.is_file())
         .with_context(|| format!("unknown app '{app_name}'"))?;
     let text =
