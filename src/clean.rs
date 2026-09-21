@@ -63,9 +63,8 @@ fn live_set(store: &Path) -> Result<(HashSet<String>, HashSet<String>)> {
     Ok((live_blobs, live_layers))
 }
 
-// Delete everything in the store that no downloaded image refers to any more. Because images share
-// layers, a layer is deleted only once no image needs it. Leftovers from interrupted downloads
-// and unpacks are swept up as well.
+// Because images share layers, a layer is deleted only once no image needs it. Leftovers from
+// interrupted downloads and unpacks are swept up as well.
 pub fn gc_images() -> Result<()> {
     let store = store::dir()?;
     if !store.exists() {
@@ -124,8 +123,7 @@ pub fn gc_images() -> Result<()> {
 }
 
 // Forget images whose app no longer exists. As long as the record under refs/ is there the image
-// counts as in use, so removing it is what lets the pass above delete the image data. The file name
-// is the reference, with '/' as '+'.
+// counts as in use, so removing it is what lets the pass above delete the image data.
 fn drop_orphan_refs() -> Result<()> {
     let mut live = HashSet::new();
     for app_name in app_names() {
@@ -227,8 +225,6 @@ fn prune_runtime() -> Result<()> {
     Ok(())
 }
 
-// The `clean` command: forget images of apps that are gone, delete image data nothing uses
-// any more, and clean up after killed runs.
 pub fn clean() -> Result<()> {
     drop_orphan_refs()?;
     gc_images()?;

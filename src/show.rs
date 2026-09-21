@@ -35,8 +35,7 @@ struct Printer {
 }
 
 impl Printer {
-    // Print a line the file does not contain, greyed out to set it apart, or nothing at all when
-    // defaults are hidden.
+    // Greyed out to set the line apart from the ones the file states.
     fn defaulted(&self, line: String) {
         if !self.defaults {
             return;

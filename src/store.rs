@@ -55,10 +55,9 @@ pub fn layer_path(digest: &str) -> Result<PathBuf> {
     Ok(dir()?.join("layers").join(digest_path(digest)?))
 }
 
-// Path of the file under refs/ that records which version of an image was downloaded last.
-// Its existence answers "do we already have this image?" without asking the registry.
-// The '/' of a reference cannot appear in a file name and is replaced by '+', which references
-// never contain, so none collide.
+// Records which version of an image was downloaded last; its existence answers "do we already have
+// this image?" without asking the registry. The '/' of a reference cannot appear in a file name and
+// is replaced by '+', which references never contain, so none collide.
 pub fn ref_marker(reference: &str) -> Result<PathBuf> {
     Ok(dir()?.join("refs").join(reference.replace('/', "+")))
 }
@@ -90,7 +89,6 @@ pub fn write_blob(digest: &str, bytes: &[u8]) -> Result<()> {
     fs::write(&dest, bytes).with_context(|| format!("storing blob {digest}"))
 }
 
-// Which version of an image was downloaded last, or None if it never was.
 pub fn read_ref(reference: &str) -> Result<Option<String>> {
     let path = ref_marker(reference)?;
     match fs::read_to_string(&path) {
@@ -124,7 +122,6 @@ pub fn temp_path(tag: &str) -> Result<PathBuf> {
     Ok(dir.join(format!(".download-{tag}-{}", unique_id())))
 }
 
-// Move a finished download into its final place in the store.
 pub fn commit_blob(temp: &Path, digest: &str) -> Result<()> {
     let dest = blob_path(digest)?;
     create_parent(&dest)?;
@@ -159,10 +156,9 @@ pub fn remove_tree(path: &Path) -> Result<()> {
     fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))
 }
 
-// Unpack a downloaded layer into its own directory, decompressing it by media type. Layers mark
-// deleted files with special ".wh." entries; those are left alone, as fuse-overlayfs understands
-// them. Unpacking happens in a temporary directory that is renamed at the end, so a broken unpack
-// never looks finished.
+// Layers mark deleted files with special ".wh." entries; those are left alone, as fuse-overlayfs
+// understands them. Unpacking happens in a temporary directory that is renamed at the end, so a
+// broken unpack never looks finished.
 pub fn extract_layer(temp: &Path, digest: &str, media_type: &str) -> Result<()> {
     let dest = layer_path(digest)?;
     create_parent(&dest)?;
@@ -199,9 +195,8 @@ pub struct Image {
     pub config: ImageConfiguration,
 }
 
-// Make sure the app's image is in the store and read out what a run needs. An image already there
-// is used as it is, never refreshed - that is what `pull` is for. Apps with `pull = false` fail
-// here if their image is missing.
+// An image already in the store is used as it is, never refreshed - that is what `pull` is for.
+// Apps with `pull = false` fail here if their image is missing.
 pub fn resolve(cfg: &AppConfig) -> Result<Image> {
     let reference: Reference = cfg
         .image

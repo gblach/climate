@@ -153,9 +153,8 @@ const ENOSYS: u32 = 38;
 // domain back. What this leaves out is the domain that turns off address space randomization.
 const PERSONALITIES: [u64; 5] = [0x0, 0x8, 0x20000, 0x20008, 0xffffffff];
 
-// One test on one argument of a syscall: argument number `index` compared against `value` with
-// `op`. A masked comparison is the odd one out - there the mask goes in `value_two`, and youki
-// checks that (argument & value_two) equals `value`. The other operators ignore `value_two`.
+// A masked comparison is the odd one out: there the mask goes in `value_two`, and youki checks
+// that (argument & value_two) equals `value`. The other operators ignore `value_two`.
 fn condition(
     index: usize,
     op: LinuxSeccompOperator,

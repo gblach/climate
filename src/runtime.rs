@@ -21,16 +21,14 @@ use std::thread::JoinHandle;
 use crate::forward::Bridge;
 use crate::store;
 
-// Scratch directory for running containers, under $XDG_RUNTIME_DIR or the temp directory. Each
-// run creates overlays/, bundles/ and containers/ here and the `clean` command removes them,
-// so both sides must agree on the location.
+// Scratch directory for running containers. Each run creates overlays/, bundles/ and containers/
+// here and the `clean` command removes them, so both sides must agree on the location.
 pub fn runtime_dir() -> PathBuf {
     dirs::runtime_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("climate")
 }
 
-// The size of the user's terminal, so the container's can match it; 0s if unknown.
 fn window_size() -> Winsize {
     tcgetwinsize(std::io::stdin()).unwrap_or(Winsize {
         ws_row: 0,
@@ -40,8 +38,7 @@ fn window_size() -> Winsize {
     })
 }
 
-// Copy bytes from one stream to the other until either end closes. A read error - which is what
-// a closed terminal looks like - counts as a normal end.
+// A read error - which is what a closed terminal looks like - counts as the stream ending normally.
 fn copy(mut from: impl Read, mut to: impl Write) {
     let mut buf = [0u8; 8192];
     loop {
@@ -112,9 +109,8 @@ impl ConsoleSocket {
         &self.path
     }
 
-    // Take our end of the container's terminal off the socket. youki sends it while the container
-    // is created, but it waits in the socket's buffer, so accepting the connection afterwards still
-    // finds it.
+    // youki sends our end of the terminal while the container is created, but it waits in the
+    // socket's buffer, so accepting the connection afterwards still finds it.
     fn into_master(self) -> Result<OwnedFd> {
         let (stream, _) = self
             .listener
@@ -139,9 +135,8 @@ impl ConsoleSocket {
     }
 }
 
-// Start the two threads that shuttle bytes between the container's terminal and ours. The input
-// thread runs until the process exits; the returned handle is the output thread's, which ends with
-// the container and is waited for so that no output is lost.
+// The input thread runs until the process exits; the returned handle is the output thread's, which
+// ends with the container and is waited for so that no output is lost.
 fn pump(master: &OwnedFd) -> JoinHandle<()> {
     let writer = master
         .try_clone()
@@ -154,10 +149,9 @@ fn pump(master: &OwnedFd) -> JoinHandle<()> {
     std::thread::spawn(move || copy(File::from(reader), std::io::stdout()))
 }
 
-// Wait for the container's first process to finish and return its exit code, or 128 plus the signal
-// number if it was killed. Other children may finish first; they are collected and ignored. Running
-// out of children means that exit code is lost, which is an error, so a failed app can never look
-// like it succeeded.
+// Returns 128 plus the signal number if the container was killed. Other children may finish first;
+// they are collected and ignored. Running out of children means the exit code is lost, which is an
+// error, so a failed app can never look like it succeeded.
 fn wait(pid: Pid) -> Result<i32> {
     loop {
         match rustix::process::wait(WaitOptions::empty()) {
@@ -313,10 +307,9 @@ fn discard_pipe() -> Result<OwnedFd> {
     Ok(writer)
 }
 
-// Create the container described by `spec`, run it until it finishes, and return its exit code.
 // With `tty` the container gets its own terminal, whose other end is copied to and from our stdin
-// and stdout; without it it uses this process's streams. With `localhost` its loopback is bridged
-// to the host's for as long as it runs. Everything the run created is deleted before returning.
+// and stdout. With `localhost` its loopback is bridged to the host's. Everything the run created is
+// deleted before returning.
 pub fn run(mut spec: Spec, tty: bool, localhost: bool) -> Result<i32> {
     let base = runtime_dir();
     let id = format!("climate-{}", store::unique_id());
@@ -371,7 +364,6 @@ pub fn run(mut spec: Spec, tty: bool, localhost: bool) -> Result<i32> {
         .build()
         .context("creating the container")?;
 
-    // Collect our end of the terminal the container sent while it was created.
     let master = console.map(ConsoleSocket::into_master).transpose()?;
 
     let pid = container
@@ -379,8 +371,7 @@ pub fn run(mut spec: Spec, tty: bool, localhost: bool) -> Result<i32> {
         .context("container has no pid after create")?;
     let pid = Pid::from_raw(pid.as_raw()).context("container has an invalid pid")?;
 
-    // Hand the pid to the signal handler, then deliver any signal that arrived while the container
-    // was still being created.
+    // Deliver any signal that arrived while the container was still being created.
     CONTAINER_PID.store(pid.as_raw_nonzero().get(), Ordering::Relaxed);
     let pending = PENDING_SIGNAL.swap(0, Ordering::Relaxed);
     if pending != 0 && !FORWARDED.swap(true, Ordering::Relaxed) {
@@ -471,7 +462,6 @@ fn lowerdir_arg(path: &Path) -> Result<String> {
     Ok(path.to_string())
 }
 
-// A directory of this run's own, where the assembled root filesystem lives.
 fn run_dir() -> PathBuf {
     runtime_dir().join("overlays").join(store::unique_id())
 }
@@ -490,9 +480,8 @@ impl Mount {
         &self.merged
     }
 
-    // Stack the image's layers. `layers` lists them bottom-up, the way the image stores them, while
-    // fuse-overlayfs expects the topmost first, so the order is reversed. The stub goes above
-    // all of them.
+    // `layers` lists them bottom-up, the way the image stores them, while fuse-overlayfs expects
+    // the topmost first, so the order is reversed. The stub goes above all of them.
     pub fn new(layers: &[String], mountpoints: &[MountPoint]) -> Result<Self> {
         if layers.is_empty() {
             bail!("image has no layers to mount");

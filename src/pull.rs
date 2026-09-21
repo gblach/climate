@@ -24,9 +24,8 @@ fn draw_target() -> ProgressDrawTarget {
     }
 }
 
-// A labelled progress bar for one download, or a spinner when the size is not known. It starts
-// hidden because applying a style draws the bar straight away, which would leave a stray line;
-// adding it to the MultiProgress shows it.
+// Starts hidden because applying a style draws the bar straight away, which would leave a stray
+// line; adding it to the MultiProgress shows it.
 fn styled_bar(label: &str, size: i64) -> ProgressBar {
     let len = (size > 0).then_some(size as u64);
     let template = if len.is_some() {
@@ -44,8 +43,7 @@ fn styled_bar(label: &str, size: i64) -> ProgressBar {
     bar
 }
 
-// Download one file to `temp` while updating `bar`. The client checks the content against
-// the digest the registry advertised.
+// The client checks the content against the digest the registry advertised.
 async fn download_blob(
     client: &Client,
     reference: &Reference,
@@ -63,8 +61,7 @@ async fn download_blob(
         .with_context(|| format!("pulling blob {}", descriptor.digest))
 }
 
-// Download one layer, then unpack it into the store. Unpacking is CPU-bound, so it runs
-// on a separate thread where it cannot hold up the other downloads.
+// Unpacking is CPU-bound, so it runs on a thread where it cannot hold up the other downloads.
 async fn fetch_layer(
     client: &Client,
     reference: &Reference,
@@ -90,10 +87,9 @@ async fn fetch_layer(
     result
 }
 
-// Download an image: ask the registry which version matches this machine's OS and CPU architecture,
-// store its settings, and unpack the layers not already in the store. Since layers are identified
-// by their content, re-pulling an unchanged image downloads nothing and a newer one only the layers
-// that differ. Layers are fetched in parallel, each with its own progress bar.
+// The registry is asked which version matches this machine's OS and CPU architecture. Since layers
+// are identified by their content, re-pulling an unchanged image downloads nothing and a newer one
+// only the layers that differ. Layers are fetched in parallel, each with its own progress bar.
 async fn fetch_image(client: &Client, reference: &Reference) -> Result<()> {
     let auth = RegistryAuth::Anonymous;
     let (manifest, manifest_digest) = client
@@ -161,10 +157,9 @@ async fn fetch_image(client: &Client, reference: &Reference) -> Result<()> {
     Ok(())
 }
 
-// Get the app's image into the store. Apps with `pull = false` supply their image some other way,
-// so nothing is downloaded for them. With `update` the registry is contacted every time; without
-// it an image already in the store is left alone. Only public registries are supported
-// for now - there is no login.
+// Apps with `pull = false` supply their image some other way, so nothing is downloaded for them.
+// With `update` the registry is contacted every time; without it an image already in the store is
+// left alone. Only public registries are supported for now - there is no login.
 pub fn ensure(cfg: &AppConfig, update: bool) -> Result<()> {
     if !cfg.image.pull {
         return Ok(());
@@ -194,8 +189,6 @@ pub fn ensure(cfg: &AppConfig, update: bool) -> Result<()> {
     runtime.block_on(fetch_image(&client, &reference))
 }
 
-// The `pull` command. With `update` it refreshes every app that was downloaded before; otherwise
-// it downloads the one app that was named.
 pub fn pull(update: bool, app: Option<&str>) -> Result<()> {
     let mut failed = Vec::new();
 

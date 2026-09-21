@@ -103,6 +103,7 @@ climate link <app>...           # create symlink shortcuts
 climate link -a | --all         # link every available app
 climate link -f | --force       # replace existing files or symlinks
 climate clean                   # free the space of unused images, clean up after killed runs
+climate --version               # print the version and exit
 ```
 
 ## Automatic updates

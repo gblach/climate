@@ -107,9 +107,8 @@ pub fn hook(socket: &str) -> Result<()> {
     send_fds(&stream, &borrowed)
 }
 
-// Enable the container's loopback interface so connections to 127.0.0.1 work. It exists in a fresh
-// network namespace but starts out disabled, and switching it on from inside needs no privileges.
-// The ioctl calls read its flags and set the "up" bit.
+// The container's loopback interface exists in a fresh network namespace but starts out disabled,
+// and switching it on from inside needs no privileges.
 fn bring_loopback_up() -> Result<()> {
     let sock = socket(AddressFamily::INET, SocketType::DGRAM, None)
         .context("opening a socket to configure loopback")?;
@@ -158,7 +157,6 @@ fn loopback_addrs(port: u16) -> [SocketAddr; 2] {
     ]
 }
 
-// An unconnected socket of the family the address belongs to.
 fn loopback_socket(addr: &SocketAddr) -> Result<OwnedFd> {
     let sock = match addr {
         SocketAddr::V4(_) => socket(AddressFamily::INET, SocketType::STREAM, None)?,
@@ -350,8 +348,6 @@ fn serve(mirror: &Mirror, helper: &OwnedFd) {
     }
 }
 
-// Work out which ports should be mirrored now and make the set of listeners match.
-//
 // The mirrors are listening sockets themselves, so they turn up in the scan and have to be taken
 // back out of it, or each side would look to the other like it hosts the other's services. A port
 // both sides genuinely listen on is mirrored neither way: each then reaches its own service.
@@ -397,9 +393,8 @@ fn rescan(mirrors: &mut Vec<Mirror>, helper: &OwnedFd, pid: i32) {
     }
 }
 
-// Keep the mirrors in step with what both sides are listening on and hand on the connections they
-// receive, until the write end of `quit` is closed. The wait between scans ends early when a
-// connection arrives, so scans go by the clock instead, or a busy port would cause one apiece.
+// Runs until the write end of `quit` is closed. The wait between scans ends early when a connection
+// arrives, so scans go by the clock instead, or a busy port would cause one apiece.
 fn forward_loop(helper: OwnedFd, quit: OwnedFd, pid: i32) {
     let interval = Duration::from_secs(SCAN_INTERVAL.tv_sec as u64);
     let mut mirrors = Vec::new();

@@ -171,10 +171,9 @@ fn yes() -> bool {
     true
 }
 
-// A memory size, written either as a string with a unit, "512M", or as a bare number of bytes.
-// Both are handed on as a string, which is what `parse_memory` reads. Reading the value as a
-// toml::Value first is what keeps TOML's own integers and floats apart, so 1.5 is refused here
-// rather than being rounded into a byte count.
+// Reading the value as a toml::Value first keeps TOML's own integers and floats apart, so 1.5 is
+// refused here rather than being rounded into a byte count. Both forms are handed on as a string,
+// which is what `parse_memory` reads.
 fn size<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
     match Option::<toml::Value>::deserialize(deserializer)? {
         Some(toml::Value::Integer(bytes)) => Ok(Some(bytes.to_string())),
@@ -186,10 +185,9 @@ fn size<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D:
     }
 }
 
-// Directories searched for app definitions; the first match wins: the override directory
-// ($CLIMATE_APPS_DIR) when set, definitions written by the user (~/.config/climate/apps),
-// definitions downloaded by `climate sync` (~/.local/share/climate/apps), then the system-wide ones
-// (/usr/share/climate/apps).
+// Directories searched for app definitions; the first match wins. In order: the $CLIMATE_APPS_DIR
+// override, the user's own definitions, the ones `climate sync` downloads, then the system-wide
+// ones.
 fn search_dirs() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(apps_dir) = std::env::var_os("CLIMATE_APPS_DIR") {
@@ -205,10 +203,9 @@ fn search_dirs() -> Vec<PathBuf> {
     paths
 }
 
-// Names of all available apps, taken from the TOML file names. Definitions sit one level down, in a
-// directory named after the first character of the app name, so every search directory is walked
-// two levels deep. The BTreeSet sorts the names and drops duplicates when an app exists in several
-// directories.
+// Definitions sit one level down, in a directory named after the first character of the app name,
+// so every search directory is walked two levels deep. The BTreeSet sorts the names and drops
+// duplicates when an app exists in several directories.
 pub fn app_names() -> Vec<String> {
     let mut app_names = BTreeSet::new();
     for dir in search_dirs() {
@@ -251,9 +248,8 @@ fn validate_app_name(app_name: &str) -> Result<()> {
     Ok(())
 }
 
-// Find an app definition in the search directories and read it. Each directory groups its apps by
-// first character, so `xh` is looked up as `x/xh.toml`. The path is returned alongside the text so
-// error messages can name the file.
+// Each search directory groups its apps by first character, so `xh` is looked up as `x/xh.toml`.
+// The path is returned alongside the text so error messages can name the file.
 fn read(app_name: &str) -> Result<(PathBuf, String)> {
     validate_app_name(app_name)?;
     // The name has been validated as ASCII, so slicing off the first byte cannot split a character.
@@ -296,9 +292,8 @@ impl AppConfig {
         Self::parse(app_name, &path, &text)
     }
 
-    // Load a definition twice: once into the struct, once as a plain TOML table. The struct fills
-    // in defaults for missing keys, so only the table still shows which keys the file itself
-    // states.
+    // The struct fills in defaults for missing keys, so the file is read a second time as a plain
+    // TOML table, which still shows only the keys the file itself states.
     pub fn load_with_raw(app_name: &str) -> Result<(Self, toml::Table)> {
         let (path, text) = read(app_name)?;
         let config = Self::parse(app_name, &path, &text)?;
@@ -316,9 +311,7 @@ impl AppConfig {
         }
     }
 
-    // Download the image if it is missing, stack its layers into a root filesystem, describe
-    // the container, and run it. Ends this process with the container's exit code, so it only
-    // returns when the setup fails.
+    // Ends this process with the container's exit code, so it only returns when the setup fails.
     pub fn run(&self, user_args: &[String]) -> Result<()> {
         crate::spec::check_host_dir(&self.run)?;
         let image = crate::store::resolve(self)?;
@@ -331,9 +324,8 @@ impl AppConfig {
             rustix::process::getuid().as_raw(),
             rustix::process::getgid().as_raw(),
         );
-        // Give the app a terminal only when all three standard streams really are one.
-        // If any of them is piped or redirected, the container gets them as they are,
-        // so the app notices and prints plain output.
+        // Give the app a terminal only when all three standard streams really are one. Otherwise
+        // they are passed on as they are, so the app notices and prints plain output.
         let tty = std::io::stdin().is_terminal()
             && std::io::stdout().is_terminal()
             && std::io::stderr().is_terminal();
@@ -348,9 +340,8 @@ impl AppConfig {
     }
 }
 
-// Download the apps repository. An ssh URL talks to the server through an ssh subprocess,
-// the way git does (so $GIT_SSH_COMMAND applies); an http(s) URL uses the built-in HTTP client.
-// Both speak version 2 of the git protocol.
+// An ssh URL talks to the server through an ssh subprocess, the way git does (so $GIT_SSH_COMMAND
+// applies); an http(s) URL uses the built-in HTTP client. Both speak version 2 of the git protocol.
 fn fetch(repo: &Repository, url: &str, opts: &FetchOptions) -> Result<FetchOutcome> {
     if is_ssh_url(url) {
         let conn_opts = ConnectOptions {
@@ -371,16 +362,13 @@ fn fetch(repo: &Repository, url: &str, opts: &FetchOptions) -> Result<FetchOutco
     }
 }
 
-// How the checked-out app definitions changed in one sync.
 struct SyncCounts {
     added: usize,
     changed: usize,
     removed: usize,
 }
 
-// Fetch the newest commit of the apps repository (depth 1, so no history is downloaded) and update
-// the checked-out files to match it. Returns how many app definitions that added, changed and
-// removed.
+// Fetches at depth 1, so no history is downloaded.
 fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<SyncCounts> {
     let opts = FetchOptions {
         refspecs: vec![FETCH_REFSPEC.to_string()],
@@ -392,7 +380,6 @@ fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<SyncCounts> {
         bail!("the apps remote {url} advertised no branches (does it exist and is it accessible?)");
     }
 
-    // Look up the commit the remote's default branch now points at.
     let branch = outcome
         .default_branch
         .context("the apps remote advertised no default branch")?;
@@ -404,8 +391,7 @@ fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<SyncCounts> {
         .and_then(|u| u.new_oid)
         .with_context(|| format!("fetch did not update {tracking}"))?;
 
-    // The file listing of the commit checked out now, for the checkout below to compare against.
-    // A fresh clone has no local branch and nothing to compare.
+    // A fresh clone has no local branch, so there is nothing for the checkout to compare against.
     let local_branch = format!("refs/heads/{branch}");
     let from_tree = match resolve_ref(&repo.git_dir, &local_branch) {
         Ok(old_tip) => {
@@ -416,7 +402,6 @@ fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<SyncCounts> {
         Err(_) => None,
     };
 
-    // Move the local branch to the fetched commit and check that branch out.
     write_symbolic_ref(&repo.git_dir, "HEAD", &local_branch).context("setting HEAD")?;
     write_ref(&repo.git_dir, &local_branch, &tip)
         .with_context(|| format!("updating {local_branch}"))?;
@@ -436,8 +421,7 @@ fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<SyncCounts> {
         removed: 0,
     };
     for change in &changes {
-        // Only the .toml files are app definitions; other files in the repository (README and the
-        // like) are not worth reporting.
+        // Only .toml files are app definitions; the repository's other files are not counted.
         if !change.path().ends_with(".toml") {
             continue;
         }
@@ -450,9 +434,8 @@ fn fetch_and_checkout(repo: &Repository, url: &str) -> Result<SyncCounts> {
     Ok(counts)
 }
 
-// Download the app definitions: the first run clones the repository, later runs update
-// it. `--system` writes to the system-wide directory, which needs root, otherwise they
-// go to the user's data directory.
+// The first run clones the apps repository, later runs update it. `--system` writes to the
+// system-wide directory, which needs root, otherwise they go to the user's data directory.
 pub fn sync(system: bool) -> Result<()> {
     let target = if system {
         PathBuf::from(SYSTEM_DIR)

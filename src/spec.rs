@@ -37,9 +37,7 @@ const CPU_PERIOD: u64 = 100_000;
 // youki rescales it onto the 1-10000 range cgroup v2 stores.
 const CPU_SHARES_RANGE: std::ops::RangeInclusive<i64> = 2..=262_144;
 
-// A memory size from an app definition: bytes, with an optional binary unit, so "1M" is
-// 1024 * 1024. "MB" and "MiB" spell the same unit. Zero is allowed for `swap`'s sake; the sizes
-// that cannot be zero go through `parse_size`.
+// Zero is allowed for `swap`'s sake; the sizes that cannot be zero go through `parse_size`.
 fn parse_memory(key: &str, value: &str) -> Result<i64> {
     let digits = value.trim_end_matches(|c: char| c.is_ascii_alphabetic());
     let amount: i64 = digits
@@ -72,10 +70,9 @@ fn parse_size(key: &str, value: &str) -> Result<i64> {
     Ok(size)
 }
 
-// The app's limits as the runtime spec states them, or None when it sets none, which leaves the
-// container in the cgroup settings any other program of the user's gets. youki turns these into
-// properties of the container's systemd scope: MemoryMax, MemorySwapMax, MemoryHigh,
-// CPUQuotaPerSecUSec, CPUWeight and TasksMax.
+// None when the app sets no limits, which leaves the container in the cgroup settings any other
+// program of the user's gets. youki turns these into properties of the container's systemd scope:
+// MemoryMax, MemorySwapMax, MemoryHigh, CPUQuotaPerSecUSec, CPUWeight and TasksMax.
 fn resources(limits: &LimitsConfig) -> Result<Option<LinuxResources>> {
     let nothing_set = limits.memory.is_none()
         && limits.swap.is_none()
@@ -158,10 +155,9 @@ fn resources(limits: &LimitsConfig) -> Result<Option<LinuxResources>> {
     Ok(Some(builder.build().context("building resource limits")?))
 }
 
-// Assemble the command line to run, following the same rules as docker and podman: an entrypoint
-// set by the app definition replaces both the image's entrypoint and its default command; otherwise
-// the image's entrypoint stays, and its default command is used only when the user passed
-// no arguments.
+// The same rules docker and podman follow: an entrypoint set by the app definition replaces both
+// the image's entrypoint and its default command; otherwise the image's entrypoint stays, and its
+// default command is used only when the user passed no arguments.
 fn command(run: &RunConfig, image: Option<&ImageExecConfig>, user_args: &[String]) -> Vec<String> {
     let extra: Vec<String> = run.args.iter().chain(user_args).cloned().collect();
     let mut argv = Vec::new();
@@ -187,9 +183,7 @@ fn command(run: &RunConfig, image: Option<&ImageExecConfig>, user_args: &[String
     argv
 }
 
-// The environment for the container: the image's own variables first, then the app's on top.
-// "NAME=VALUE" is used as written, a bare "NAME" copies the value from the host if it is set there.
-// A PATH is added when neither supplies one.
+// The image's variables first, then the app's on top. A PATH is added when neither supplies one.
 fn environment(run: &RunConfig, image: Option<&ImageExecConfig>) -> Vec<String> {
     let mut env: Vec<String> = image
         .and_then(|c| c.env().as_ref())
@@ -237,8 +231,6 @@ fn bind(source: &Path, destination: &Path, readonly: bool) -> Result<Mount> {
         .with_context(|| format!("building bind mount for {}", destination.display()))
 }
 
-// The host directory shared with the container under the same path, or None when the app shares
-// nothing.
 fn host_dir(run: &RunConfig) -> Result<Option<PathBuf>> {
     Ok(if run.mount_cwd {
         Some(std::env::current_dir().context("resolving current directory")?)
@@ -308,7 +300,6 @@ fn create_source(path: &Path, as_dir: bool) -> Result<()> {
     Ok(())
 }
 
-// The extra host paths an app shares, as (host path, path inside the container, read-only) triples.
 // Shares are read-write unless the definition says otherwise. A path that exists is shared as
 // whatever it is, file or directory; a missing one is created, unless it is shared read-only, where
 // an empty path is never what the definition meant.
@@ -358,8 +349,6 @@ pub fn check_host_dir(run: &RunConfig) -> Result<()> {
     Ok(())
 }
 
-// Which of the host's name resolution files to share. Nothing is shared unless the app uses
-// the host network, and a file that does not exist is skipped.
 fn host_net_files(run: &RunConfig) -> Vec<PathBuf> {
     if run.network != Network::Full {
         return Vec::new();
@@ -414,9 +403,6 @@ fn capabilities(run: &RunConfig) -> Result<LinuxCapabilities> {
         .context("building capabilities")
 }
 
-// Build the description of one container run that the runtime consumes: the read-only root
-// filesystem, the command, environment and start directory, the user and isolation settings,
-// and the mounts.
 pub fn build(
     cfg: &AppConfig,
     image: &ImageConfiguration,
