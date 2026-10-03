@@ -1,6 +1,7 @@
 mod clean;
 mod config;
 mod forward;
+mod localnet;
 mod pull;
 mod runtime;
 mod seccomp;
@@ -192,15 +193,18 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Not user-facing commands: a run with `network = "localhost"` re-runs this binary with these
-    // arguments for the two halves of its loopback bridge. See the forward module.
+    // Not user-facing commands: a run with `network = "localhost"` or `"localnet"` re-runs this
+    // binary with these arguments for the two halves of its loopback bridge. See the forward
+    // module.
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some(forward::HOOK_ARG) => {
             let socket = args.next().context("loopback hook: missing socket path")?;
             return forward::hook(&socket);
         }
-        Some(forward::HELPER_ARG) => return forward::helper(),
+        Some(forward::HELPER_ARG) => {
+            return forward::helper(args.next().as_deref() == Some(forward::LOCALNET_ARG));
+        }
         _ => {}
     }
 

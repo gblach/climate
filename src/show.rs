@@ -17,6 +17,7 @@ fn network_value(network: &Network) -> toml::Value {
         Network::Full => "full",
         Network::None => "none",
         Network::Localhost => "localhost",
+        Network::Localnet => "localnet",
     };
     toml::Value::from(name)
 }

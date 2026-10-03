@@ -383,6 +383,13 @@ pub fn mountpoints(cfg: &AppConfig) -> Result<Vec<MountPoint>> {
     for file in host_net_files(run) {
         points.push(MountPoint::file(file));
     }
+    // Not mounted onto but written in place, so it hides whatever resolv.conf the image has.
+    if run.network == Network::Localnet {
+        points.push(MountPoint::generated(
+            "/etc/resolv.conf",
+            crate::localnet::resolv_conf(),
+        ));
+    }
     Ok(points)
 }
 
@@ -485,9 +492,9 @@ pub fn build(
     match run.network {
         // With no network namespace listed the container shares the host's.
         Network::Full => {}
-        // A private network namespace. Its loopback starts out disabled; in `localhost` mode the
-        // hook in the forward module enables it and bridges it to the host's.
-        Network::None | Network::Localhost => {
+        // A private network namespace. Its loopback starts out disabled; in `localhost` and
+        // `localnet` mode the hook in the forward module enables it and bridges it to the host's.
+        Network::None | Network::Localhost | Network::Localnet => {
             let mut namespaces = linux.namespaces().clone().unwrap_or_default();
             namespaces.push(
                 LinuxNamespaceBuilder::default()

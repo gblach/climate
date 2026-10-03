@@ -12,7 +12,7 @@ use rustix::pipe::{PipeFlags, pipe_with};
 use std::collections::HashSet;
 use std::io::{IoSlice, IoSliceMut};
 use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpStream};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -20,7 +20,7 @@ use std::process::{Child, Command};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-// Two-way loopback forwarding for `network = "localhost"`.
+// Two-way loopback forwarding for `network = "localhost"` and `network = "localnet"`.
 //
 // The container has a network namespace of its own, so its 127.0.0.1 is its own and neither side
 // can reach the other's services. This bridges the two loopbacks: a port the host listens on is
@@ -42,6 +42,8 @@ use std::time::{Duration, Instant};
 // Marker arguments this binary passes to itself for those two jobs.
 pub const HOOK_ARG: &str = "__lo-hook";
 pub const HELPER_ARG: &str = "__lo-helper";
+// Passed after HELPER_ARG to have the helper also set up the localnet TUN device.
+pub const LOCALNET_ARG: &str = "localnet";
 
 // The socket the hook reports back on, in the container's bundle directory.
 const HOOK_SOCKET: &str = "loopback.sock";
@@ -92,7 +94,7 @@ fn send_fds(sock: impl AsFd, fds: &[BorrowedFd<'_>]) -> Result<()> {
 // container's namespaces. It gets the loopback interface working and passes the namespaces
 // themselves out to the waiting run, which is the only way they can be had.
 pub fn hook(socket: &str) -> Result<()> {
-    bring_loopback_up()?;
+    crate::localnet::bring_up(b"lo")?;
     let stream = UnixStream::connect(socket)
         .with_context(|| format!("connecting to {socket} from inside the container"))?;
     let mut namespaces = Vec::new();
@@ -105,30 +107,6 @@ pub fn hook(socket: &str) -> Result<()> {
     }
     let borrowed: Vec<BorrowedFd<'_>> = namespaces.iter().map(OwnedFd::as_fd).collect();
     send_fds(&stream, &borrowed)
-}
-
-// The container's loopback interface exists in a fresh network namespace but starts out disabled,
-// and switching it on from inside needs no privileges.
-fn bring_loopback_up() -> Result<()> {
-    let sock = socket(AddressFamily::INET, SocketType::DGRAM, None)
-        .context("opening a socket to configure loopback")?;
-
-    let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
-    for (slot, byte) in req.ifr_name.iter_mut().zip(b"lo") {
-        *slot = *byte as libc::c_char;
-    }
-
-    let fd = sock.as_raw_fd();
-    unsafe {
-        if libc::ioctl(fd, libc::SIOCGIFFLAGS, &mut req) < 0 {
-            return Err(std::io::Error::last_os_error()).context("reading loopback flags");
-        }
-        req.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
-        if libc::ioctl(fd, libc::SIOCSIFFLAGS, &mut req) < 0 {
-            return Err(std::io::Error::last_os_error()).context("bringing loopback up");
-        }
-    }
-    Ok(())
 }
 
 // Join the namespaces the hook passed out. The user namespace has to come first: entering a network
@@ -205,12 +183,14 @@ fn connect_to(port: u16) -> Option<OwnedFd> {
 
 // The helper process: it joins the container's namespaces and spends the run making sockets there
 // on request. It forwards nothing itself, because from in there it cannot reach the host's network.
-pub fn helper() -> Result<()> {
+pub fn helper(localnet: bool) -> Result<()> {
     // The end of the socket pair the run left on a known descriptor.
     let sock = unsafe { OwnedFd::from_raw_fd(HELPER_FD) };
     enter_namespaces()?;
-    // An empty reply, so the run knows the namespaces were joined before it starts the app.
-    send_fds(&sock, &[])?;
+    // The first reply tells the run the namespaces were joined before it starts the app, and
+    // carries the TUN device in localnet mode, which has to be made from in there too.
+    let tun = localnet.then(crate::localnet::create_tun).transpose()?;
+    send_fds(&sock, &tun.iter().map(OwnedFd::as_fd).collect::<Vec<_>>())?;
 
     loop {
         let mut request = [0u8; 3];
@@ -468,7 +448,7 @@ impl Bridge {
 
     // Collect the container's namespaces from the hook and start forwarding. This returns only
     // once the helper is inside them, so a failure is reported before the app is started.
-    pub fn start(self, pid: i32) -> Result<Forwarder> {
+    pub fn start(self, pid: i32, localnet: bool) -> Result<Forwarder> {
         let (stream, _) = self
             .listener
             .accept()
@@ -477,20 +457,21 @@ impl Bridge {
         let [user, net] = <[OwnedFd; 2]>::try_from(namespaces)
             .ok()
             .context("the loopback hook did not pass both namespaces")?;
-        Forwarder::start(user, net, pid)
+        Forwarder::start(user, net, pid, localnet)
     }
 }
 
-// Loopback forwarding for one run. It lasts as long as the container: dropping it stops forwarding
-// and shuts the helper down.
+// Loopback forwarding for one run, and the LAN relay in localnet mode. It lasts as long as the
+// container: dropping it stops forwarding and shuts the helper down.
 pub struct Forwarder {
     helper: Child,
     quit: Option<OwnedFd>,
     thread: Option<JoinHandle<()>>,
+    relay: Option<tokio::runtime::Runtime>,
 }
 
 impl Forwarder {
-    fn start(user: OwnedFd, net: OwnedFd, pid: i32) -> Result<Self> {
+    fn start(user: OwnedFd, net: OwnedFd, pid: i32, localnet: bool) -> Result<Self> {
         let (ours, theirs) = socketpair(
             AddressFamily::UNIX,
             SocketType::SEQPACKET,
@@ -504,6 +485,7 @@ impl Forwarder {
         let helper = unsafe {
             Command::new(exe)
                 .arg(HELPER_ARG)
+                .args(localnet.then_some(LOCALNET_ARG))
                 .pre_exec(move || {
                     // Move each descriptor to the number the helper looks for. The copy step
                     // clears close-on-exec, and keeps one still to be moved from being clobbered.
@@ -533,9 +515,17 @@ impl Forwarder {
             helper,
             quit: None,
             thread: None,
+            relay: None,
         };
         // The helper's first reply says it is inside the container's namespaces.
-        recv_fds(&ours).context("waiting for the container's loopback helper")?;
+        let tun = recv_fds(&ours).context("waiting for the container's loopback helper")?;
+        if localnet {
+            let tun = tun
+                .into_iter()
+                .next()
+                .context("the helper did not pass the TUN device")?;
+            forwarder.relay = Some(crate::localnet::start(tun)?);
+        }
 
         let (quit_rx, quit_tx) =
             pipe_with(PipeFlags::CLOEXEC).context("creating the forwarding shutdown pipe")?;
@@ -550,6 +540,9 @@ impl Drop for Forwarder {
         // The helper goes first, so that a loop waiting on a reply is let go rather than waited
         // for; closing the pipe then wakes the loop from the wait it is in the rest of the time.
         let _ = self.helper.kill();
+        if let Some(relay) = self.relay.take() {
+            relay.shutdown_background();
+        }
         drop(self.quit.take());
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();

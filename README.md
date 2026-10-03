@@ -169,7 +169,7 @@ overrides one of the same name below it.
 
 ## Networking
 
-An app picks one of three modes in `[run]`:
+An app picks one of four modes in `[run]`:
 
 ```toml
 [run]
@@ -181,6 +181,7 @@ network = "localhost"
 | `none`      | nothing; the default                            |
 | `full`      | the host's own network, so the internet as well |
 | `localhost` | services on the host's loopback, nothing else   |
+| `localnet`  | the host's loopback and local networks, no more |
 
 `localhost` still gives the container a private network of its own - no LAN, no internet. What it
 adds is a bridge between the two loopbacks, both ways: a port the host listens on is reachable at
@@ -196,6 +197,21 @@ Three limits are worth knowing:
   is not reachable from the host unless `net.ipv4.ip_unprivileged_port_start` allows it.
 - Only TCP is bridged, not UDP. Both `127.0.0.1` and `::1` are, and either address reaches a
   service listening on the other, so an app need not know which one it is on.
+
+`localnet` does everything `localhost` does and also lets the app reach the devices on the networks
+the host is directly on - the LAN, and bridges like `virbr0` or `docker0` - but nothing past
+a gateway, so not the internet. Its traffic goes out through the host as your own user, so LAN
+devices see it come from the host. Which networks count is decided per connection from the host's
+routing table: an address the host reaches without a gateway is allowed, anything else is refused.
+
+- The container's `/etc/resolv.conf` names the host's default gateway as its DNS server, as a home
+  router usually is one. The gateway is treated like any other LAN device, so for a name it does
+  not know itself the router may still ask the internet. That happens inside the router and cannot
+  be stopped from here.
+- A VPN interface with a route of its own and no gateway, as Tailscale and WireGuard set up, counts
+  as a local network too, so its peers are reachable.
+- TCP and UDP to single addresses are relayed. Broadcast, multicast (so mDNS `.local` names) and
+  ping are not, and nothing on the LAN can connect in to the app.
 
 ## Capabilities
 
@@ -292,7 +308,8 @@ Containers run rootless, as your own user and with no extra privileges:
 
 - The image filesystem is read-only. Writable space is provided at `/tmp`, `/run`, and `/var/tmp`,
   plus any host directory an app mounts.
-- Networking is configured per app: full host access, none, or a loopback bridged to the host's.
+- Networking is configured per app: full host access, none, a loopback bridged to the host's, or
+  that plus the local networks.
 - Resource limits are configured per app and enforced by the kernel through cgroup v2. An app that
   sets none runs with the whole machine available, as it would natively.
 - Containers hold no capabilities, not even the three an OCI runtime grants by default. An app

@@ -18,6 +18,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::thread::JoinHandle;
 
+use crate::config::Network;
 use crate::forward::Bridge;
 use crate::store;
 
@@ -308,9 +309,9 @@ fn discard_pipe() -> Result<OwnedFd> {
 }
 
 // With `tty` the container gets its own terminal, whose other end is copied to and from our stdin
-// and stdout. With `localhost` its loopback is bridged to the host's. Everything the run created is
-// deleted before returning.
-pub fn run(mut spec: Spec, tty: bool, localhost: bool) -> Result<i32> {
+// and stdout. In localhost and localnet mode its loopback is bridged to the host's. Everything the
+// run created is deleted before returning.
+pub fn run(mut spec: Spec, tty: bool, network: &Network) -> Result<i32> {
     let base = runtime_dir();
     let id = format!("climate-{}", store::unique_id());
     let bundle = base.join("bundles").join(&id);
@@ -320,9 +321,9 @@ pub fn run(mut spec: Spec, tty: bool, localhost: bool) -> Result<i32> {
         .with_context(|| format!("creating {}", state_root.display()))?;
     // The bridge has to be listening before the spec is written, because the hook it installs
     // connects back while the container is being created.
-    let mut bridge = match localhost {
-        true => Some(Bridge::bind(&bundle)?),
-        false => None,
+    let mut bridge = match network {
+        Network::Localhost | Network::Localnet => Some(Bridge::bind(&bundle)?),
+        Network::Full | Network::None => None,
     };
     if let Some(bridge) = &bridge {
         bridge.install_hook(&mut spec)?;
@@ -382,7 +383,7 @@ pub fn run(mut spec: Spec, tty: bool, localhost: bool) -> Result<i32> {
         // Started before the app is, so that a port is already reachable when it first tries.
         let _forward = bridge
             .take()
-            .map(|bridge| bridge.start(pid.as_raw_nonzero().get()))
+            .map(|bridge| bridge.start(pid.as_raw_nonzero().get(), *network == Network::Localnet))
             .transpose()?;
         container.start().context("starting the container")?;
         // Switch to raw mode only now that the container has started, so any error message above
@@ -408,10 +409,12 @@ pub fn run(mut spec: Spec, tty: bool, localhost: bool) -> Result<i32> {
     result
 }
 
-// An empty path to create in the stub layer for something to be mounted onto.
+// A path to create in the stub layer: mostly an empty one for something to be mounted onto, but
+// a file can also be given contents, which then stand in for the image's own file.
 pub struct MountPoint {
     path: PathBuf,
     is_file: bool,
+    contents: String,
 }
 
 impl MountPoint {
@@ -419,6 +422,7 @@ impl MountPoint {
         Self {
             path: path.into(),
             is_file: false,
+            contents: String::new(),
         }
     }
 
@@ -426,6 +430,15 @@ impl MountPoint {
         Self {
             path: path.into(),
             is_file: true,
+            contents: String::new(),
+        }
+    }
+
+    pub fn generated(path: impl Into<PathBuf>, contents: String) -> Self {
+        Self {
+            path: path.into(),
+            is_file: true,
+            contents,
         }
     }
 }
@@ -441,7 +454,8 @@ fn materialise_stub(stub: &Path, mountpoints: &[MountPoint]) -> Result<()> {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("creating {}", parent.display()))?;
             }
-            File::create(&target).with_context(|| format!("creating {}", target.display()))?;
+            std::fs::write(&target, &point.contents)
+                .with_context(|| format!("creating {}", target.display()))?;
         } else {
             std::fs::create_dir_all(&target)
                 .with_context(|| format!("creating {}", target.display()))?;
