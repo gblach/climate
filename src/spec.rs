@@ -326,6 +326,21 @@ fn extra_mounts(run: &RunConfig) -> Result<Vec<(PathBuf, PathBuf, bool)>> {
     Ok(mounts)
 }
 
+// The checks `run` makes that depend on the definition alone, not on the host or the working
+// directory, so a definition can be checked without starting it. Mount paths are not required to
+// exist, as `run` creates the missing ones.
+pub fn check(cfg: &AppConfig) -> Result<()> {
+    resources(&cfg.limits)?;
+    for entry in &cfg.run.mount {
+        let (source, destination, _) = parse_mount(entry)?;
+        if expand_path(source)? == Path::new("/") {
+            bail!("refusing to mount / (the whole host filesystem) into the container");
+        }
+        expand_path(destination)?;
+    }
+    Ok(())
+}
+
 // Stop the working directory share from handing over far more than intended. Started from `/`,
 // it would share the whole host filesystem read-write and hide the image's own files, so refuse.
 // Started from the home directory, it would expose everything in it (~/.ssh, keyrings, ...)

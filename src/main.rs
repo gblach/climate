@@ -27,6 +27,7 @@ struct Cli {
 #[derive(FromArgs)]
 #[argp(subcommand)]
 enum Command {
+    Check(CheckCmd),
     Clean(CleanCmd),
     Link(LinkCmd),
     List(ListCmd),
@@ -34,6 +35,18 @@ enum Command {
     Run(RunCmd),
     Show(ShowCmd),
     Sync(SyncCmd),
+}
+
+/// Check app definitions for mistakes, without running them.
+#[derive(FromArgs)]
+#[argp(subcommand, name = "check")]
+struct CheckCmd {
+    /// check every available app
+    #[argp(switch, short = 'a')]
+    all: bool,
+    /// apps to check
+    #[argp(positional)]
+    apps: Vec<String>,
 }
 
 /// Free the disk space of images no app needs any more, and clean up after killed runs.
@@ -106,6 +119,29 @@ struct SyncCmd {
     /// install for all users, in /usr/share/climate/apps (needs root)
     #[argp(switch, short = 's')]
     system: bool,
+}
+
+// Every app is checked, so one run reports all the broken definitions, not just the first.
+fn check(cmd: &CheckCmd) -> Result<()> {
+    let app_names = if cmd.all {
+        app_names()
+    } else if cmd.apps.is_empty() {
+        bail!("check: specify one or more app names, or -a/--all");
+    } else {
+        cmd.apps.clone()
+    };
+
+    let mut failed = 0;
+    for app_name in &app_names {
+        if let Err(err) = AppConfig::load(app_name).and_then(|cfg| spec::check(&cfg)) {
+            eprintln!("{app_name}: {err:#}");
+            failed += 1;
+        }
+    }
+    if failed > 0 {
+        bail!("{failed} of {} apps failed the check", app_names.len());
+    }
+    Ok(())
 }
 
 // Create a symlink at `link` pointing to `target`. If it already points there nothing happens;
@@ -223,6 +259,7 @@ fn main() -> Result<()> {
         return Ok(());
     };
     match command {
+        Command::Check(cmd) => check(&cmd)?,
         Command::Clean(_) => clean::clean()?,
         Command::List(_) => list()?,
         Command::Link(cmd) => link(&cmd)?,

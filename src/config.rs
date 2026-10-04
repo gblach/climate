@@ -25,6 +25,7 @@ const DEFAULT_APPS_URL: &str = "https://github.com/gblach/climate-apps.git";
 const FETCH_REFSPEC: &str = "+refs/heads/*:refs/remotes/origin/*";
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppConfig {
     pub app: AppMeta,
     pub image: ImageConfig,
@@ -35,6 +36,7 @@ pub struct AppConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppMeta {
     pub name: String,
     pub description: String,
@@ -43,6 +45,7 @@ pub struct AppMeta {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImageConfig {
     // Full image reference including registry and tag, e.g. "quay.io/coreos/butane:release".
     pub reference: String,
@@ -79,6 +82,7 @@ pub enum Network {
 // How to run the image. The defaults share the current working directory and give the container
 // no network; an app can override both.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunConfig {
     #[serde(default)]
     pub entrypoint: Option<Entrypoint>,
@@ -138,6 +142,7 @@ impl Default for RunConfig {
 // How much of the machine one run may take, enforced by the kernel through cgroup v2. A limit
 // left out is not enforced, so by default a tool gets the whole machine, as it would natively.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LimitsConfig {
     // Memory ceiling: a byte count with an optional binary suffix, "512M", "2G", or a bare
     // number, 1048576. An app that goes over it is killed, unless it has swap to spill into.

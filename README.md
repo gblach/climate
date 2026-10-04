@@ -96,6 +96,8 @@ climate sync -s | --system      # sync into the system directory (needs root)
 climate list                    # show available apps
 climate show <app>              # print an app definition, defaults included
 climate show -n | --no-defaults # print only the keys the definition states
+climate check <app>...          # check app definitions for mistakes
+climate check -a | --all        # check every available app
 climate pull <app>              # fetch the image
 climate pull -u | --update      # refresh already-downloaded images
 climate run <app> [args...]     # run the app, forwarding args
