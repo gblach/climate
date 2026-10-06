@@ -481,9 +481,10 @@ fn run_dir() -> PathBuf {
 }
 
 // The container's root filesystem: the image's layers stacked by fuse-overlayfs into one directory
-// tree. No writable layer is added, so the result rejects all writes and nothing has to be copied
+// tree. A run adds no writable layer, so the result rejects all writes and nothing has to be copied
 // per run. The layers come from the shared store; only the small stub layer with the missing mount
-// points is built here.
+// points is built here. A build passes an upper and a work directory, which make the root writable
+// and collect everything written into the upper one.
 pub struct Mount {
     dir: PathBuf,
     merged: PathBuf,
@@ -496,7 +497,11 @@ impl Mount {
 
     // `layers` lists them bottom-up, the way the image stores them, while fuse-overlayfs expects
     // the topmost first, so the order is reversed. The stub goes above all of them.
-    pub fn new(layers: &[String], mountpoints: &[MountPoint]) -> Result<Self> {
+    pub fn new(
+        layers: &[String],
+        mountpoints: &[MountPoint],
+        writable: Option<(&Path, &Path)>,
+    ) -> Result<Self> {
         if layers.is_empty() {
             bail!("image has no layers to mount");
         }
@@ -516,11 +521,15 @@ impl Mount {
             }
             lowerdirs.push(lowerdir_arg(&path)?);
         }
-        let lowerdir = lowerdirs.join(":");
+        let mut options = format!("lowerdir={}", lowerdirs.join(":"));
+        if let Some((upper, work)) = writable {
+            let (upper, work) = (lowerdir_arg(upper)?, lowerdir_arg(work)?);
+            options += &format!(",upperdir={upper},workdir={work}");
+        }
 
         let status = Command::new("fuse-overlayfs")
             .arg("-o")
-            .arg(format!("lowerdir={lowerdir}"))
+            .arg(options)
             .arg(&merged)
             .status()
             .context("running fuse-overlayfs (is it installed?)")?;

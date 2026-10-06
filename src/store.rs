@@ -59,7 +59,25 @@ pub fn layer_path(digest: &str) -> Result<PathBuf> {
 // this image?" without asking the registry. The '/' of a reference cannot appear in a file name and
 // is replaced by '+', which references never contain, so none collide.
 pub fn ref_marker(reference: &str) -> Result<PathBuf> {
-    Ok(dir()?.join("refs").join(reference.replace('/', "+")))
+    Ok(dir()?.join("refs").join(marker_name(reference)))
+}
+
+pub fn marker_name(reference: &str) -> String {
+    reference.replace('/', "+")
+}
+
+// The name an app's image is recorded under. An image built by an install script belongs to the
+// app alone, so it is named after the app, not after the image it was built on.
+pub fn image_key(cfg: &AppConfig) -> Result<String> {
+    if cfg.image.install.is_some() {
+        return Ok(format!("localhost/climate/{}", cfg.app.name));
+    }
+    let reference: Reference = cfg
+        .image
+        .reference
+        .parse()
+        .with_context(|| format!("invalid image reference '{}'", cfg.image.reference))?;
+    Ok(reference.whole())
 }
 
 pub fn has_ref(reference: &str) -> Result<bool> {
@@ -195,30 +213,35 @@ pub struct Image {
     pub config: ImageConfiguration,
 }
 
+pub fn read_manifest(key: &str) -> Result<Option<OciImageManifest>> {
+    let Some(manifest_digest) = read_ref(key)? else {
+        return Ok(None);
+    };
+    let manifest = serde_json::from_slice(&read_blob(&manifest_digest)?)
+        .with_context(|| format!("parsing cached manifest for {key}"))?;
+    Ok(Some(manifest))
+}
+
+pub fn image_config(key: &str, manifest: &OciImageManifest) -> Result<ImageConfiguration> {
+    ImageConfiguration::from_reader(read_blob(&manifest.config.digest)?.as_slice())
+        .with_context(|| format!("parsing image config for {key}"))
+}
+
 // An image already in the store is used as it is, never refreshed - that is what `pull` is for.
 // Apps with `pull = false` fail here if their image is missing.
 pub fn resolve(cfg: &AppConfig) -> Result<Image> {
-    let reference: Reference = cfg
-        .image
-        .reference
-        .parse()
-        .with_context(|| format!("invalid image reference '{}'", cfg.image.reference))?;
-    let key = reference.whole();
+    let key = image_key(cfg)?;
 
-    pull::ensure(cfg, false)?;
+    pull::ensure(cfg, false, false)?;
 
-    let Some(manifest_digest) = read_ref(&key)? else {
+    let Some(manifest) = read_manifest(&key)? else {
         bail!(
             "{}: image '{}' is not in the store; pull it first",
             cfg.app.name,
             cfg.image.reference,
         );
     };
-
-    let manifest: OciImageManifest = serde_json::from_slice(&read_blob(&manifest_digest)?)
-        .with_context(|| format!("parsing cached manifest for {key}"))?;
-    let config = ImageConfiguration::from_reader(read_blob(&manifest.config.digest)?.as_slice())
-        .with_context(|| format!("parsing image config for {key}"))?;
+    let config = image_config(&key, &manifest)?;
     let layers = manifest.layers.iter().map(|l| l.digest.clone()).collect();
 
     Ok(Image { layers, config })

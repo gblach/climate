@@ -22,6 +22,16 @@ fn network_value(network: &Network) -> toml::Value {
     toml::Value::from(name)
 }
 
+// A multi-line script reads best as a literal string, which keeps backslashes as they are. One
+// that holds the literal's own closing quotes falls back to an ordinary escaped string.
+fn script_value(script: &str) -> String {
+    if script.contains('\n') && !script.contains("'''") {
+        format!("'''\n{script}'''")
+    } else {
+        toml::Value::from(script).to_string()
+    }
+}
+
 // Capability names as a definition writes them, without the "CAP_" prefix.
 fn capabilities_value(capabilities: &[Capability]) -> toml::Value {
     let names: Vec<String> = capabilities.iter().map(ToString::to_string).collect();
@@ -84,6 +94,10 @@ pub fn show(app_name: &str, defaults: bool) -> Result<()> {
     println!("\n[image]");
     printer.key("reference", config.image.reference.into(), false);
     printer.key("pull", config.image.pull.into(), absent("image", "pull"));
+    match &config.image.install {
+        Some(script) => println!("install = {}", script_value(script)),
+        None => printer.defaulted("# install is unset: the image runs as pulled".to_string()),
+    }
 
     // Every key of [run] has a default, so with defaults hidden the section can end up empty. Print
     // its header only if something will follow.

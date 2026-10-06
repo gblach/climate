@@ -35,7 +35,7 @@ pub struct AppConfig {
     pub limits: LimitsConfig,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppMeta {
     pub name: String,
@@ -44,7 +44,7 @@ pub struct AppMeta {
     pub license: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageConfig {
     // Full image reference including registry and tag, e.g. "quay.io/coreos/butane:release".
@@ -53,6 +53,11 @@ pub struct ImageConfig {
     // locally or installed by some other means.
     #[serde(default = "yes")]
     pub pull: bool,
+    // Shell script that builds the app's own image on top of `reference`, for a tool no registry
+    // carries an image of. It runs once per pull with the host network, and what it writes
+    // becomes one more layer.
+    #[serde(default)]
+    pub install: Option<String>,
 }
 
 // Replacement for the program the image runs by default. A string names a single executable; a list
@@ -323,7 +328,7 @@ impl AppConfig {
         crate::spec::check_host_dir(&self.run)?;
         let image = crate::store::resolve(self)?;
         let mountpoints = crate::spec::mountpoints(self)?;
-        let mount = crate::runtime::Mount::new(&image.layers, &mountpoints)?;
+        let mount = crate::runtime::Mount::new(&image.layers, &mountpoints, None)?;
 
         // Inside the container the app appears to run as root, but the kernel maps that back
         // to the real user, so files it writes into the shared directory stay owned by that user.

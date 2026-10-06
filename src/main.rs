@@ -1,3 +1,4 @@
+mod build;
 mod clean;
 mod config;
 mod forward;
@@ -82,6 +83,9 @@ struct PullCmd {
     /// download newer images for apps you already pulled
     #[argp(switch, short = 'u')]
     update: bool,
+    /// with --update, also build the images of apps with an install script again
+    #[argp(switch, short = 'r')]
+    rebuild: bool,
     /// app name (omit with --update)
     #[argp(positional)]
     app: Option<String>,
@@ -263,7 +267,7 @@ fn main() -> Result<()> {
         Command::Clean(_) => clean::clean()?,
         Command::List(_) => list()?,
         Command::Link(cmd) => link(&cmd)?,
-        Command::Pull(cmd) => pull::pull(cmd.update, cmd.app.as_deref())?,
+        Command::Pull(cmd) => pull::pull(cmd.update, cmd.rebuild, cmd.app.as_deref())?,
         Command::Run(cmd) => {
             let (app_name, args) = cmd.cmd.split_first().context("run: missing app name")?;
             AppConfig::load(app_name)?.run(args)?;

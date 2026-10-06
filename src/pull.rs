@@ -157,19 +157,12 @@ async fn fetch_image(client: &Client, reference: &Reference) -> Result<()> {
     Ok(())
 }
 
-// Apps with `pull = false` supply their image some other way, so nothing is downloaded for them.
 // With `update` the registry is contacted every time; without it an image already in the store is
 // left alone. Only public registries are supported for now - there is no login.
-pub fn ensure(cfg: &AppConfig, update: bool) -> Result<()> {
-    if !cfg.image.pull {
-        return Ok(());
-    }
-
-    let reference: Reference = cfg
-        .image
-        .reference
+fn fetch(reference: &str, update: bool) -> Result<()> {
+    let reference: Reference = reference
         .parse()
-        .with_context(|| format!("invalid image reference '{}'", cfg.image.reference))?;
+        .with_context(|| format!("invalid image reference '{reference}'"))?;
 
     if !update && store::has_ref(reference.whole().as_str())? {
         return Ok(());
@@ -189,9 +182,31 @@ pub fn ensure(cfg: &AppConfig, update: bool) -> Result<()> {
     runtime.block_on(fetch_image(&client, &reference))
 }
 
-pub fn pull(update: bool, app: Option<&str>) -> Result<()> {
+// Apps with `pull = false` supply their image some other way, so nothing is downloaded for them.
+// An app with an install script has its image built on top of the one it names. Once built it is
+// left alone unless `rebuild` asks for it, as running the script downloads the tool all over again.
+pub fn ensure(cfg: &AppConfig, update: bool, rebuild: bool) -> Result<()> {
+    let Some(script) = &cfg.image.install else {
+        return match cfg.image.pull {
+            true => fetch(&cfg.image.reference, update),
+            false => Ok(()),
+        };
+    };
+    if !rebuild && store::has_ref(&store::image_key(cfg)?)? {
+        return Ok(());
+    }
+    if cfg.image.pull {
+        fetch(&cfg.image.reference, update)?;
+    }
+    crate::build::build(cfg, script)
+}
+
+pub fn pull(update: bool, rebuild: bool, app: Option<&str>) -> Result<()> {
     let mut failed = Vec::new();
 
+    if rebuild && !update {
+        bail!("pull: -r/--rebuild only goes with -u/--update");
+    }
     if update {
         // One unreachable registry must not stop the remaining apps or the cleanup below,
         // so failures are only collected and reported at the end.
@@ -199,11 +214,11 @@ pub fn pull(update: bool, app: Option<&str>) -> Result<()> {
             let Some(cfg) = AppConfig::load_or_warn(&app_name) else {
                 continue;
             };
-            let Ok(reference) = cfg.image.reference.parse::<Reference>() else {
+            let Ok(key) = store::image_key(&cfg) else {
                 continue;
             };
-            if store::has_ref(reference.whole().as_str())?
-                && let Err(err) = ensure(&cfg, true)
+            if store::has_ref(&key)?
+                && let Err(err) = ensure(&cfg, true, rebuild)
             {
                 eprintln!("{app_name}: {err:#}");
                 failed.push(app_name);
@@ -212,10 +227,11 @@ pub fn pull(update: bool, app: Option<&str>) -> Result<()> {
     } else {
         let app_name = app.context("pull: specify an app name or -u/--update")?;
         let cfg = AppConfig::load(app_name)?;
-        if !cfg.image.pull {
+        if !cfg.image.pull && cfg.image.install.is_none() {
             bail!("{app_name}: image is built locally or provided out of band (pull = false)");
         }
-        ensure(&cfg, true)?;
+        // Naming the app is asking for it, so an app with an install script is always rebuilt.
+        ensure(&cfg, true, true)?;
     }
 
     // Free the disk space held by the image versions just replaced.

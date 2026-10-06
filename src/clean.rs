@@ -123,21 +123,28 @@ pub fn gc_images() -> Result<()> {
 }
 
 // Forget images whose app no longer exists. As long as the record under refs/ is there the image
-// counts as in use, so removing it is what lets the pass above delete the image data.
+// counts as in use, so removing it is what lets the pass above delete the image data. An app with
+// an install script keeps its base image too, so the next build need not download it again. Names
+// are compared as file names: an app name may hold a '+', so turning one back into a reference
+// is not reliable.
 fn drop_orphan_refs() -> Result<()> {
     let mut live = HashSet::new();
     for app_name in app_names() {
         let Some(cfg) = AppConfig::load_or_warn(&app_name) else {
             continue;
         };
+        if let Ok(key) = store::image_key(&cfg) {
+            live.insert(store::marker_name(&key));
+        }
         if let Ok(reference) = cfg.image.reference.parse::<Reference>() {
-            live.insert(reference.whole());
+            live.insert(store::marker_name(&reference.whole()));
         }
     }
 
     for entry in entries(&store::dir()?.join("refs"))? {
-        let reference = entry.file_name().to_string_lossy().replace('+', "/");
-        if !live.contains(&reference) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let reference = name.replace('+', "/");
+        if !live.contains(&name) {
             fs::remove_file(entry.path())
                 .with_context(|| format!("removing ref {}", entry.path().display()))?;
             eprintln!("dropped ref {reference}");

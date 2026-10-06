@@ -100,6 +100,7 @@ climate check <app>...          # check app definitions for mistakes
 climate check -a | --all        # check every available app
 climate pull <app>              # fetch the image
 climate pull -u | --update      # refresh already-downloaded images
+climate pull -r | --rebuild     # with -u, also rerun install scripts
 climate run <app> [args...]     # run the app, forwarding args
 climate link <app>...           # create symlink shortcuts
 climate link -a | --all         # link every available app
@@ -168,6 +169,31 @@ states.
 You can also drop entirely new `*.toml` files into any of these directories, under the
 first-character directory the app name calls for. A definition in a higher-precedence directory
 overrides one of the same name below it.
+
+## Install scripts
+
+An app whose tool has no image of its own can build one: `install` in `[image]` holds a shell
+script, and `reference` names the image it runs on:
+
+```toml
+[image]
+reference = "docker.io/library/node:lts"
+install = """
+npm install -g @google/gemini-cli
+npm cache clean --force
+"""
+```
+
+The first `climate run` or `climate pull` runs the script, as root, with the host network, and keeps
+what it writes as one more layer on top of the base image. `climate pull <app>` builds it again,
+picking up a new release of the tool. `climate pull --update` leaves built apps alone, as running
+every script downloads every tool all over again; add `-r`/`--rebuild` to rebuild them too. A
+script that fails leaves the previous build in place.
+
+```sh
+climate pull gemini      # rebuild one app
+climate pull -ur         # refresh every image and rebuild every built app
+```
 
 ## Networking
 
