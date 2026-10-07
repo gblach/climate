@@ -7,6 +7,7 @@ use oci_client::client::{ClientConfig, current_platform_resolver};
 use oci_client::manifest::{IMAGE_MANIFEST_MEDIA_TYPE, OCI_IMAGE_MEDIA_TYPE, OciDescriptor};
 use oci_client::secrets::RegistryAuth;
 use oci_client::{Client, Reference};
+use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::Path;
 use tokio_util::io::InspectWriter;
@@ -208,6 +209,8 @@ pub fn pull(update: bool, rebuild: bool, app: Option<&str>) -> Result<()> {
         bail!("pull: -r/--rebuild only goes with -u/--update");
     }
     if update {
+        // Apps sharing an image contact the registry only for the first of them.
+        let mut updated = HashSet::new();
         // One unreachable registry must not stop the remaining apps or the cleanup below,
         // so failures are only collected and reported at the end.
         for app_name in app_names() {
@@ -217,11 +220,24 @@ pub fn pull(update: bool, rebuild: bool, app: Option<&str>) -> Result<()> {
             let Ok(key) = store::image_key(&cfg) else {
                 continue;
             };
-            if store::has_ref(&key)?
-                && let Err(err) = ensure(&cfg, true, rebuild)
-            {
-                eprintln!("{app_name}: {err:#}");
-                failed.push(app_name);
+            if !store::has_ref(&key)? {
+                continue;
+            }
+            let image = cfg
+                .image
+                .reference
+                .parse::<Reference>()
+                .map_or_else(|_| cfg.image.reference.clone(), |r| r.whole());
+            match ensure(&cfg, !updated.contains(&image), rebuild) {
+                // An app with an install script fetches its base image only when rebuilt.
+                Ok(()) if cfg.image.pull && (cfg.image.install.is_none() || rebuild) => {
+                    updated.insert(image);
+                }
+                Ok(()) => {}
+                Err(err) => {
+                    eprintln!("{app_name}: {err:#}");
+                    failed.push(app_name);
+                }
             }
         }
     } else {
