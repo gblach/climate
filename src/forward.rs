@@ -2,13 +2,14 @@ use anyhow::{Context, Result, bail};
 use oci_spec::runtime::{Hook, HookBuilder, HooksBuilder, Spec};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{Mode, OFlags, open};
-use rustix::io::retry_on_intr;
+use rustix::io::{fcntl_dupfd_cloexec, retry_on_intr};
 use rustix::net::{
     AddressFamily, RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendAncillaryBuffer,
     SendAncillaryMessage, SendFlags, SocketFlags, SocketType, accept, bind, connect, listen,
     recvmsg, sendmsg, socket, socketpair, sockopt,
 };
 use rustix::pipe::{PipeFlags, pipe_with};
+use rustix::thread::{LinkNameSpaceType, move_into_link_name_space};
 use std::collections::HashSet;
 use std::io::{IoSlice, IoSliceMut};
 use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpStream};
@@ -114,13 +115,12 @@ pub fn hook(socket: &str) -> Result<()> {
 // container's user namespace grants both. It is allowed because the container is this user's own.
 fn enter_namespaces() -> Result<()> {
     for (fd, kind, name) in [
-        (USER_NS_FD, libc::CLONE_NEWUSER, "user"),
-        (NET_NS_FD, libc::CLONE_NEWNET, "network"),
+        (USER_NS_FD, LinkNameSpaceType::User, "user"),
+        (NET_NS_FD, LinkNameSpaceType::Network, "network"),
     ] {
-        if unsafe { libc::setns(fd, kind) } < 0 {
-            return Err(std::io::Error::last_os_error())
-                .with_context(|| format!("joining the container's {name} namespace"));
-        }
+        let fd = unsafe { BorrowedFd::borrow_raw(fd) };
+        move_into_link_name_space(fd, Some(kind))
+            .with_context(|| format!("joining the container's {name} namespace"))?;
     }
     Ok(())
 }
@@ -491,10 +491,8 @@ impl Forwarder {
                     // clears close-on-exec, and keeps one still to be moved from being clobbered.
                     let mut moved = [0; 3];
                     for (slot, source) in moved.iter_mut().zip(sources) {
-                        *slot = libc::fcntl(source, libc::F_DUPFD_CLOEXEC, 10);
-                        if *slot < 0 {
-                            return Err(std::io::Error::last_os_error());
-                        }
+                        *slot =
+                            fcntl_dupfd_cloexec(BorrowedFd::borrow_raw(source), 10)?.into_raw_fd();
                     }
                     for (source, target) in moved.iter().zip([HELPER_FD, USER_NS_FD, NET_NS_FD]) {
                         if libc::dup2(*source, target) < 0 {

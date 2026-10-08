@@ -4,6 +4,7 @@ use oci_spec::runtime::{
     Arch, LinuxSeccomp, LinuxSeccompAction, LinuxSeccompArg, LinuxSeccompArgBuilder,
     LinuxSeccompBuilder, LinuxSeccompOperator, LinuxSyscall, LinuxSyscallBuilder,
 };
+use rustix::io::Errno;
 use std::collections::BTreeSet;
 
 use crate::config::{Capability, RunConfig};
@@ -253,7 +254,7 @@ pub fn profile(run: &RunConfig) -> Result<LinuxSeccomp> {
 
     LinuxSeccompBuilder::default()
         .default_action(LinuxSeccompAction::ScmpActErrno)
-        .default_errno_ret(libc::EPERM as u32)
+        .default_errno_ret(Errno::PERM.raw_os_error() as u32)
         .architectures(ARCHITECTURES.to_vec())
         .syscalls(syscalls)
         .build()

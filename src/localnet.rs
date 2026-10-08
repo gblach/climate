@@ -1,11 +1,13 @@
 use anyhow::{Context, Result};
 use ipstack::{IpStack, IpStackConfig, IpStackStream, IpStackTcpStream, IpStackUdpStream};
 use rustix::fs::{Mode, OFlags, open};
+use rustix::ioctl::{Opcode, Updater};
+use rustix::net::netdevice::name_to_index;
 use rustix::net::{AddressFamily, SocketType, socket};
 use std::fmt::Write as _;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll, ready};
 use tokio::io::unix::AsyncFd;
@@ -57,11 +59,8 @@ fn sockaddr_v4(addr: Ipv4Addr) -> libc::sockaddr {
     unsafe { std::mem::transmute::<libc::sockaddr_in, libc::sockaddr>(sin) }
 }
 
-fn ioctl<T>(fd: &impl AsRawFd, request: libc::c_ulong, arg: &mut T, what: &str) -> Result<()> {
-    if unsafe { libc::ioctl(fd.as_raw_fd(), request as _, arg as *mut T) } < 0 {
-        return Err(io::Error::last_os_error()).context(what.to_string());
-    }
-    Ok(())
+fn ioctl<const OPCODE: Opcode, T>(fd: impl AsFd, arg: &mut T, what: &str) -> Result<()> {
+    unsafe { rustix::ioctl::ioctl(fd, Updater::<OPCODE, T>::new(arg)) }.context(what.to_string())
 }
 
 // An interface in a fresh network namespace starts out disabled, loopback included, and switching
@@ -70,19 +69,9 @@ pub fn bring_up(name: &[u8]) -> Result<()> {
     let sock = socket(AddressFamily::INET, SocketType::DGRAM, None)
         .context("opening a socket to configure an interface")?;
     let mut req = ifreq(name);
-    ioctl(
-        &sock,
-        libc::SIOCGIFFLAGS,
-        &mut req,
-        "reading interface flags",
-    )?;
+    ioctl::<{ libc::SIOCGIFFLAGS as Opcode }, _>(&sock, &mut req, "reading interface flags")?;
     unsafe { req.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short };
-    ioctl(
-        &sock,
-        libc::SIOCSIFFLAGS,
-        &mut req,
-        "bringing an interface up",
-    )
+    ioctl::<{ libc::SIOCSIFFLAGS as Opcode }, _>(&sock, &mut req, "bringing an interface up")
 }
 
 // IPv6 is set up on its own, and a failure there is left alone, so a host with IPv6 turned off
@@ -96,12 +85,7 @@ fn add_v6_address(index: libc::c_int) -> Result<()> {
         ifr6_prefixlen: 0,
         ifr6_ifindex: index,
     };
-    ioctl(
-        &sock,
-        libc::SIOCSIFADDR,
-        &mut req,
-        "adding the TUN IPv6 address",
-    )
+    ioctl::<{ libc::SIOCSIFADDR as Opcode }, _>(&sock, &mut req, "adding the TUN IPv6 address")
 }
 
 // Create the TUN device in whatever network namespace the caller is in, which has to be the
@@ -116,23 +100,13 @@ pub fn create_tun() -> Result<OwnedFd> {
     .context("opening /dev/net/tun")?;
     let mut req = ifreq(TUN_NAME);
     req.ifr_ifru.ifru_flags = (libc::IFF_TUN | libc::IFF_NO_PI) as libc::c_short;
-    ioctl(
-        &tun,
-        libc::TUNSETIFF as _,
-        &mut req,
-        "creating the TUN device",
-    )?;
+    ioctl::<{ libc::TUNSETIFF as Opcode }, _>(&tun, &mut req, "creating the TUN device")?;
 
     let sock = socket(AddressFamily::INET, SocketType::DGRAM, None)
         .context("opening a socket to configure the TUN device")?;
     let mut req = ifreq(TUN_NAME);
     req.ifr_ifru.ifru_addr = sockaddr_v4(TUN_V4);
-    ioctl(
-        &sock,
-        libc::SIOCSIFADDR,
-        &mut req,
-        "adding the TUN IPv4 address",
-    )?;
+    ioctl::<{ libc::SIOCSIFADDR as Opcode }, _>(&sock, &mut req, "adding the TUN IPv4 address")?;
     bring_up(TUN_NAME)?;
 
     let mut name = ifreq(TUN_NAME).ifr_name;
@@ -141,21 +115,11 @@ pub fn create_tun() -> Result<OwnedFd> {
     route.rt_genmask = sockaddr_v4(Ipv4Addr::UNSPECIFIED);
     route.rt_flags = RTF_UP as libc::c_ushort;
     route.rt_dev = name.as_mut_ptr();
-    ioctl(
-        &sock,
-        libc::SIOCADDRT,
-        &mut route,
-        "adding the default route",
-    )?;
+    ioctl::<{ libc::SIOCADDRT as Opcode }, _>(&sock, &mut route, "adding the default route")?;
 
-    let mut req = ifreq(TUN_NAME);
-    ioctl(
-        &sock,
-        libc::SIOCGIFINDEX,
-        &mut req,
-        "looking up the TUN device",
-    )?;
-    let _ = add_v6_address(unsafe { req.ifr_ifru.ifru_ifindex });
+    let index =
+        name_to_index(&sock, str::from_utf8(TUN_NAME)?).context("looking up the TUN device")?;
+    let _ = add_v6_address(index as libc::c_int);
     Ok(tun)
 }
 

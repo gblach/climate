@@ -2,16 +2,17 @@ use anyhow::{Context, Result, anyhow, bail};
 use libcontainer::container::builder::ContainerBuilder;
 use libcontainer::syscall::syscall::SyscallType;
 use oci_spec::runtime::Spec;
+use rustix::fs::{OFlags, fcntl_setfl};
 use rustix::io::Errno;
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, recvmsg};
 use rustix::pipe::{PipeFlags, pipe_with};
-use rustix::process::{Pid, WaitOptions, getpid, set_child_subreaper};
+use rustix::process::{Pid, Signal, WaitOptions, getpid, kill_process, set_child_subreaper};
 use rustix::termios::{
     OptionalActions, Termios, Winsize, tcgetattr, tcgetwinsize, tcsetattr, tcsetwinsize,
 };
 use std::fs::File;
 use std::io::{IoSliceMut, Read, Write};
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -194,13 +195,14 @@ static FORWARDED: AtomicBool = AtomicBool::new(false);
 //
 // Signal handlers may only call a small set of functions; these belong to it.
 extern "C" fn forward_signal(signum: libc::c_int) {
-    let pid = CONTAINER_PID.load(Ordering::Relaxed);
-    if pid > 0 {
-        let signum = match FORWARDED.swap(true, Ordering::Relaxed) {
-            true => libc::SIGKILL,
-            false => signum,
+    if let Some(pid) = Pid::from_raw(CONTAINER_PID.load(Ordering::Relaxed)) {
+        let signal = match FORWARDED.swap(true, Ordering::Relaxed) {
+            true => Some(Signal::KILL),
+            false => Signal::from_named_raw(signum),
         };
-        unsafe { libc::kill(pid, signum) };
+        if let Some(signal) = signal {
+            let _ = kill_process(pid, signal);
+        }
     } else {
         PENDING_SIGNAL.store(signum, Ordering::Relaxed);
     }
@@ -209,7 +211,7 @@ extern "C" fn forward_signal(signum: libc::c_int) {
 fn install_signal_forwarding() -> Result<()> {
     let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
     action.sa_sigaction = forward_signal as *const () as usize;
-    for signum in [libc::SIGINT, libc::SIGTERM] {
+    for signum in [Signal::INT.as_raw(), Signal::TERM.as_raw()] {
         if unsafe { libc::sigaction(signum, &action, std::ptr::null_mut()) } != 0 {
             return Err(std::io::Error::last_os_error())
                 .with_context(|| format!("installing the handler for signal {signum}"));
@@ -225,7 +227,7 @@ static RESIZE_PIPE: AtomicI32 = AtomicI32::new(-1);
 extern "C" fn notify_resize(_signum: libc::c_int) {
     let fd = RESIZE_PIPE.load(Ordering::Relaxed);
     if fd >= 0 {
-        unsafe { libc::write(fd, [0u8].as_ptr().cast(), 1) };
+        let _ = rustix::io::write(unsafe { BorrowedFd::borrow_raw(fd) }, &[0]);
     }
 }
 
@@ -243,7 +245,7 @@ impl ResizeForwarder {
         let (read_end, write_end) =
             pipe_with(PipeFlags::CLOEXEC).context("creating the resize pipe")?;
         // Fail instead of blocking, so a full pipe cannot stall the handler.
-        unsafe { libc::fcntl(write_end.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+        fcntl_setfl(&write_end, OFlags::NONBLOCK).context("making the resize pipe non-blocking")?;
         let master = master
             .try_clone()
             .context("duplicating the pty master for resizes")?;
@@ -264,7 +266,7 @@ impl ResizeForwarder {
 
         let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
         action.sa_sigaction = notify_resize as *const () as usize;
-        if unsafe { libc::sigaction(libc::SIGWINCH, &action, std::ptr::null_mut()) } != 0 {
+        if unsafe { libc::sigaction(Signal::WINCH.as_raw(), &action, std::ptr::null_mut()) } != 0 {
             return Err(std::io::Error::last_os_error()).context("installing the SIGWINCH handler");
         }
         RESIZE_PIPE.store(write_end.as_raw_fd(), Ordering::Relaxed);
@@ -280,7 +282,7 @@ impl Drop for ResizeForwarder {
     fn drop(&mut self) {
         // Turn the handler off before closing the pipe, or a late signal could write
         // to a descriptor number something else now owns.
-        unsafe { libc::signal(libc::SIGWINCH, libc::SIG_DFL) };
+        unsafe { libc::signal(Signal::WINCH.as_raw(), libc::SIG_DFL) };
         RESIZE_PIPE.store(-1, Ordering::Relaxed);
         drop(self.pipe.take());
         if let Some(thread) = self.thread.take() {
@@ -375,8 +377,10 @@ pub fn run(mut spec: Spec, tty: bool, network: &Network) -> Result<i32> {
     // Deliver any signal that arrived while the container was still being created.
     CONTAINER_PID.store(pid.as_raw_nonzero().get(), Ordering::Relaxed);
     let pending = PENDING_SIGNAL.swap(0, Ordering::Relaxed);
-    if pending != 0 && !FORWARDED.swap(true, Ordering::Relaxed) {
-        unsafe { libc::kill(pid.as_raw_nonzero().get(), pending) };
+    if let Some(signal) = Signal::from_named_raw(pending)
+        && !FORWARDED.swap(true, Ordering::Relaxed)
+    {
+        let _ = kill_process(pid, signal);
     }
 
     let result = (|| {
