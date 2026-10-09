@@ -14,7 +14,7 @@ pub use oci_spec::runtime::Capability;
 use serde::{Deserialize, Deserializer, de};
 use std::collections::BTreeSet;
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const SYSTEM_DIR: &str = "/usr/share/climate/apps";
 
@@ -277,39 +277,85 @@ fn read(app_name: &str) -> Result<(PathBuf, String)> {
     Ok((path, text))
 }
 
+// An override sits in its own directory, apart from the definitions, so it outlives `climate sync`
+// and applies whichever search directory the definition itself comes from.
+fn read_override(app_name: &str) -> Result<Option<(PathBuf, String)>> {
+    let Some(config_dir) = dirs::config_dir() else {
+        return Ok(None);
+    };
+    let path = config_dir
+        .join("climate")
+        .join("overrides")
+        .join(&app_name[..1])
+        .join(format!("{app_name}.toml"));
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(Some((path, text)))
+}
+
+// Tables merge key by key; any other value, arrays included, replaces the one below it.
+fn merge(base: &mut toml::Table, over: toml::Table) {
+    for (key, value) in over {
+        match (base.get_mut(&key), value) {
+            (Some(toml::Value::Table(below)), toml::Value::Table(above)) => merge(below, above),
+            (_, value) => {
+                base.insert(key, value);
+            }
+        }
+    }
+}
+
 impl AppConfig {
-    fn parse(app_name: &str, path: &Path, text: &str) -> Result<Self> {
-        let config: Self =
-            toml::from_str(text).with_context(|| format!("parsing {}", path.display()))?;
+    fn check(app_name: &str, origin: &str, config: &Self) -> Result<()> {
         if config.app.name != app_name {
             anyhow::bail!(
-                "{}: app name '{}' does not match file name '{app_name}'",
-                path.display(),
+                "{origin}: app name '{}' does not match file name '{app_name}'",
                 config.app.name,
             );
         }
         if config.app.description.is_empty() {
-            anyhow::bail!("{}: app description must not be empty", path.display());
+            anyhow::bail!("{origin}: app description must not be empty");
         }
         if config.app.license.is_empty() {
-            anyhow::bail!("{}: app license must not be empty", path.display());
+            anyhow::bail!("{origin}: app license must not be empty");
         }
         crate::seccomp::check_syscall_names(&config.run)
-            .with_context(|| format!("parsing {}", path.display()))?;
-        Ok(config)
+            .with_context(|| format!("parsing {origin}"))?;
+        Ok(())
     }
 
     pub fn load(app_name: &str) -> Result<Self> {
-        let (path, text) = read(app_name)?;
-        Self::parse(app_name, &path, &text)
+        Ok(Self::load_with_raw(app_name)?.0)
     }
 
-    // The struct fills in defaults for missing keys, so the file is read a second time as a plain
-    // TOML table, which still shows only the keys the file itself states.
+    // The struct fills in defaults for missing keys, so the file is also read as a plain TOML
+    // table, which still shows only the keys the file and its override state. Without an override
+    // the struct is parsed from the text itself, so errors point at a line in the file.
     pub fn load_with_raw(app_name: &str) -> Result<(Self, toml::Table)> {
         let (path, text) = read(app_name)?;
-        let config = Self::parse(app_name, &path, &text)?;
-        let raw = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let mut raw: toml::Table =
+            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let (config, origin) = match read_override(app_name)? {
+            None => {
+                let origin = path.display().to_string();
+                let config = toml::from_str(&text).with_context(|| format!("parsing {origin}"))?;
+                (config, origin)
+            }
+            Some((override_path, override_text)) => {
+                let over = toml::from_str(&override_text)
+                    .with_context(|| format!("parsing {}", override_path.display()))?;
+                merge(&mut raw, over);
+                let origin = format!("{} with {}", path.display(), override_path.display());
+                let config = toml::Value::Table(raw.clone())
+                    .try_into()
+                    .with_context(|| format!("parsing {origin}"))?;
+                (config, origin)
+            }
+        };
+        Self::check(app_name, &origin, &config)?;
         Ok((config, raw))
     }
 

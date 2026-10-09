@@ -147,17 +147,33 @@ character of the app name: `ffmpeg` is `f/ffmpeg.toml`, `xh` is `x/xh.toml`.
 Set `$CLIMATE_APPS_DIR` to a directory of your own - a checkout you are working
 on, for example - and it is searched before all the others.
 
-To customize an app, copy its `*.toml` into a higher-precedence directory and edit it there,
-keeping the same first-character directory:
+To change only a few keys of an app, write them to an override file in
+`~/.config/climate/overrides/` (`$XDG_CONFIG_HOME/climate/overrides/` if set), under the same
+first-character directory. It applies on top of the definition in effect, whichever directory
+that comes from, so `climate sync` keeps updating the rest:
+
+```toml
+# ~/.config/climate/overrides/f/ffmpeg.toml
+[run]
+network = "full"
+
+[limits]
+memory = "2G"
+```
+
+Tables merge key by key; any other value, a list included, replaces the one in the definition.
+
+To customize an app completely, copy its `*.toml` into a higher-precedence directory and edit it
+there, keeping the same first-character directory:
 
 ```sh
 mkdir -p ~/.config/climate/apps/f
 cp ~/.local/share/climate/apps/f/ffmpeg.toml ~/.config/climate/apps/f/
 ```
 
-`climate show <app>` prints the definition that is actually in effect, with every key the file
-leaves out filled in from its default and grayed out. Redirecting the output drops the colors,
-so it doubles as a starting point for your own copy:
+`climate show <app>` prints the definition that is actually in effect, override included, with
+every key the file leaves out filled in from its default and grayed out. Redirecting the output
+drops the colors, so it doubles as a starting point for your own copy:
 
 ```sh
 climate show ffmpeg > ~/.config/climate/apps/f/ffmpeg.toml
