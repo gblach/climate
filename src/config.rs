@@ -389,7 +389,8 @@ impl AppConfig {
             && std::io::stderr().is_terminal();
 
         let spec = crate::spec::build(self, &image.config, mount.root(), user_args, uid, gid, tty)?;
-        let code = crate::runtime::run(spec, tty, &self.run.network)?;
+        let seccomp = crate::seccomp::profile(&self.run)?;
+        let code = crate::runtime::run(spec, seccomp, tty, &self.run.network)?;
 
         // Dropping the mount unmounts it; process::exit below would skip that.
         drop(mount);

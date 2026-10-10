@@ -21,12 +21,6 @@ sudo apt install fuse-overlayfs      # Debian, Ubuntu
 Containers are managed through your systemd user session, so one has to be running (it provides
 the `dbus` session bus under `$XDG_RUNTIME_DIR`). A normal desktop or `ssh` login has one.
 
-The syscall filter described under Seccomp is applied through `libseccomp`. The released binaries
-have it built in and need nothing installed; building CLImate yourself links against the system
-copy instead, so it needs the library and its development package (`libseccomp-devel` on Fedora,
-`libseccomp-dev` on Debian and Ubuntu). Nearly every system already has the library itself, as
-systemd depends on it.
-
 ## Install
 
 Build the binary and put it on your `PATH`:

@@ -1,10 +1,6 @@
 use anyhow::{Context, Result, bail};
-use libseccomp::ScmpSyscall;
-use oci_spec::runtime::{
-    Arch, LinuxSeccomp, LinuxSeccompAction, LinuxSeccompArg, LinuxSeccompArgBuilder,
-    LinuxSeccompBuilder, LinuxSeccompOperator, LinuxSyscall, LinuxSyscallBuilder,
-};
 use rustix::io::Errno;
+use seacomb::{Action, Arch, Policy, Rule, Syscall, rule};
 use std::collections::BTreeSet;
 
 use crate::config::{Capability, RunConfig};
@@ -90,12 +86,14 @@ const ARCH_ALLOWED: [&str; 0] = [];
 
 // Which instruction sets the filter covers. A syscall made from an architecture the filter does
 // not name is refused, so the 32-bit ones are listed too, or no 32-bit program could run at all.
+// seacomb knows no other architectures, so elsewhere the list is empty and every app fails to start
+// rather than run unfiltered.
 #[cfg(target_arch = "x86_64")]
-const ARCHITECTURES: [Arch; 3] = [Arch::ScmpArchX86_64, Arch::ScmpArchX86, Arch::ScmpArchX32];
+const ARCHITECTURES: [Arch; 2] = [Arch::X86_64, Arch::X86];
 #[cfg(target_arch = "aarch64")]
-const ARCHITECTURES: [Arch; 2] = [Arch::ScmpArchAarch64, Arch::ScmpArchArm];
+const ARCHITECTURES: [Arch; 2] = [Arch::Aarch64, Arch::Arm];
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-const ARCHITECTURES: [Arch; 1] = [Arch::ScmpArchNative];
+const ARCHITECTURES: [Arch; 0] = [];
 
 // Syscalls the profile allows only when the app asked for the capability they belong to, paired
 // the way the docker and podman profile pairs them. None appear in the list above, so this pairing
@@ -138,100 +136,58 @@ const CAPABILITY_SYSCALLS: [(Capability, &[&str]); 11] = [
 
 // The flag that asks for a new user namespace. A process gets a full set of capabilities inside
 // a user namespace it creates, which is how a container holding none could hand itself some back.
-const CLONE_NEWUSER: u64 = 0x1000_0000;
+const CLONE_NEWUSER: usize = 0x1000_0000;
 
 // The address family of sockets that talk to the host of a virtual machine. Nothing a CLI tool
 // needs, and it reaches past the container.
-const AF_VSOCK: u64 = 40;
+const AF_VSOCK: i32 = 40;
 
 // "This kernel has no such syscall". clone3 keeps its flags in a structure in memory, which a
 // seccomp filter cannot read, so the flag test below cannot be written for it. Answering with this
 // error instead of EPERM makes the C library fall back to plain clone, which can be tested.
-const ENOSYS: u32 = 38;
+const ENOSYS: u16 = 38;
 
 // The execution domains an app may switch to: the normal one, 32-bit, the "report an old kernel
 // version" mode on its own and together with 32-bit, and the value that only reads the current
 // domain back. What this leaves out is the domain that turns off address space randomization.
-const PERSONALITIES: [u64; 5] = [0x0, 0x8, 0x20000, 0x20008, 0xffffffff];
-
-// A masked comparison is the odd one out: there the mask goes in `value_two`, and youki checks
-// that (argument & value_two) equals `value`. The other operators ignore `value_two`.
-fn condition(
-    index: usize,
-    op: LinuxSeccompOperator,
-    value: u64,
-    value_two: u64,
-) -> Result<LinuxSeccompArg> {
-    LinuxSeccompArgBuilder::default()
-        .index(index)
-        .value(value)
-        .value_two(value_two)
-        .op(op)
-        .build()
-        .context("building a seccomp argument test")
-}
-
-// A rule allowing the named syscalls with no strings attached.
-fn allow(names: Vec<String>) -> Result<LinuxSyscall> {
-    LinuxSyscallBuilder::default()
-        .names(names)
-        .action(LinuxSeccompAction::ScmpActAllow)
-        .build()
-        .context("building the allowed syscalls")
-}
-
-// A rule allowing one syscall only when every test holds. Calls that fail a test are left to the
-// profile's default, which refuses them.
-fn allow_if(name: &str, args: Vec<LinuxSeccompArg>) -> Result<LinuxSyscall> {
-    LinuxSyscallBuilder::default()
-        .names(vec![name.to_string()])
-        .action(LinuxSeccompAction::ScmpActAllow)
-        .args(args)
-        .build()
-        .with_context(|| format!("building the seccomp rule for {name}"))
-}
-
-// A rule answering one syscall with an error of its own rather than the profile's EPERM.
-fn fail_with(name: &str, errno: u32) -> Result<LinuxSyscall> {
-    LinuxSyscallBuilder::default()
-        .names(vec![name.to_string()])
-        .action(LinuxSeccompAction::ScmpActErrno)
-        .errno_ret(errno)
-        .build()
-        .with_context(|| format!("building the seccomp rule for {name}"))
-}
+const PERSONALITIES: [u32; 5] = [0x0, 0x8, 0x20000, 0x20008, 0xffffffff];
 
 // The rules for syscalls that are allowed only in part. Each one is paired with the syscall it
 // covers, so that an app naming that syscall in seccomp-allow or seccomp-deny can drop it.
-fn partial_rules() -> Result<Vec<(&'static str, LinuxSyscall)>> {
+fn partial_rules() -> Vec<(&'static str, Rule)> {
     let mut rules = Vec::new();
 
     // Both of these create namespaces, and a user namespace is the one that must not be created.
-    // The flags are the first argument of either call.
-    for name in ["clone", "unshare"] {
-        let no_user_namespace =
-            condition(0, LinuxSeccompOperator::ScmpCmpMaskedEq, 0, CLONE_NEWUSER)?;
-        rules.push((name, allow_if(name, vec![no_user_namespace])?));
+    // The flags are the first argument of either call. The arguments of clone come in a different
+    // order on 64-bit x86, and seacomb takes a test only on a rule whose syscall reads the same
+    // everywhere, so clone gets a rule per architecture.
+    for arch in ARCHITECTURES {
+        let rule = rule!([{ arch }] allow clone(flags) if flags & {CLONE_NEWUSER} == 0usize);
+        rules.push(("clone", rule));
     }
-    rules.push(("clone3", fail_with("clone3", ENOSYS)?));
+    let rule = rule!(allow unshare(flags) if flags & {CLONE_NEWUSER} == 0usize);
+    rules.push(("unshare", rule));
+    rules.push(("clone3", rule!(errno(ENOSYS) clone3())));
 
-    let not_vsock = condition(0, LinuxSeccompOperator::ScmpCmpNe, AF_VSOCK, 0)?;
-    rules.push(("socket", allow_if("socket", vec![not_vsock])?));
+    // `exact` leaves out the old 32-bit x86 way in through socketcall, where the domain sits in
+    // memory the filter cannot read. socketcall itself is in the allowed list.
+    let rule = rule!(allow exact socket(domain) if domain != {AF_VSOCK});
+    rules.push(("socket", rule));
 
-    // One rule per domain: the tests inside one rule all have to hold at once, while separate
-    // rules for the same syscall are tried in turn, so a call matching any one of them is allowed.
+    // Separate rules for the same syscall are tried in turn, so a call matching any one of them is
+    // allowed.
     for personality in PERSONALITIES {
-        let domain = condition(0, LinuxSeccompOperator::ScmpCmpEq, personality, 0)?;
-        rules.push(("personality", allow_if("personality", vec![domain])?));
+        let rule = rule!(allow personality(domain) if domain == {personality});
+        rules.push(("personality", rule));
     }
 
-    Ok(rules)
+    rules
 }
 
 // The seccomp filter one app runs under: everything the profile does not name fails with EPERM.
 // An app widens or narrows the list with seccomp-allow and seccomp-deny, and either key also drops
 // the partial rule for a syscall it names, so that the app's own decision is the only one left.
-pub fn profile(run: &RunConfig) -> Result<LinuxSeccomp> {
+pub fn profile(run: &RunConfig) -> Result<Policy> {
     let mut allowed: BTreeSet<&str> = ALLOWED.into_iter().chain(ARCH_ALLOWED).collect();
     for (capability, syscalls) in CAPABILITY_SYSCALLS {
         if run.capabilities.contains(&capability) {
@@ -239,7 +195,7 @@ pub fn profile(run: &RunConfig) -> Result<LinuxSeccomp> {
         }
     }
 
-    let mut partial = partial_rules()?;
+    let mut partial = partial_rules();
     for name in &run.seccomp_allow {
         allowed.insert(name);
         partial.retain(|(covered, _)| covered != name);
@@ -249,23 +205,31 @@ pub fn profile(run: &RunConfig) -> Result<LinuxSeccomp> {
         partial.retain(|(covered, _)| covered != name);
     }
 
-    let mut syscalls = vec![allow(allowed.into_iter().map(String::from).collect())?];
-    syscalls.extend(partial.into_iter().map(|(_, rule)| rule));
-
-    LinuxSeccompBuilder::default()
-        .default_action(LinuxSeccompAction::ScmpActErrno)
-        .default_errno_ret(Errno::PERM.raw_os_error() as u32)
-        .architectures(ARCHITECTURES.to_vec())
-        .syscalls(syscalls)
-        .build()
-        .context("building the seccomp profile")
+    let refuse = Action::Errno(Errno::PERM.raw_os_error() as u16);
+    let mut policy = Policy::new(refuse)?;
+    for arch in ARCHITECTURES {
+        policy.add_arch(arch)?;
+    }
+    // Covers the x32 calling convention too, which seacomb treats as an architecture of its own.
+    policy.on_bad_arch(refuse)?;
+    for name in allowed {
+        let syscall = Syscall::lookup(name)
+            .with_context(|| format!("'{name}' is not the name of a syscall"))?;
+        policy.add(rule!(allow { syscall }()))?;
+    }
+    for (name, rule) in partial {
+        policy
+            .add(rule)
+            .with_context(|| format!("adding the seccomp rule for {name}"))?;
+    }
+    Ok(policy)
 }
 
-// Check the syscall names an app lists. A name the C library cannot resolve is dropped when the
-// filter is built, so a misspelling in seccomp-deny would quietly permit what it meant to refuse.
+// Check the syscall names an app lists, so that a misspelling stops the app at once instead of
+// when its filter is built.
 pub fn check_syscall_names(run: &RunConfig) -> Result<()> {
     for name in run.seccomp_allow.iter().chain(&run.seccomp_deny) {
-        if ScmpSyscall::from_name(name).is_err() {
+        if Syscall::lookup(name).is_none() {
             bail!("'{name}' is not the name of a syscall");
         }
     }

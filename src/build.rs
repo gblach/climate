@@ -60,7 +60,8 @@ fn run_script(
         rustix::process::getgid().as_raw(),
     );
     let spec = crate::spec::build(&build_cfg, &config, mount.root(), &[], uid, gid, false)?;
-    let code = crate::runtime::run(spec, false, &Network::Full)?;
+    let seccomp = crate::seccomp::profile(&build_cfg.run)?;
+    let code = crate::runtime::run(spec, seccomp, false, &Network::Full)?;
     drop(mount);
     if code != 0 {
         bail!(

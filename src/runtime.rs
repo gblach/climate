@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, anyhow, bail};
 use libcontainer::container::builder::ContainerBuilder;
 use libcontainer::syscall::syscall::SyscallType;
+use libcontainer::workload::default::DefaultExecutor;
+use libcontainer::workload::{Executor, ExecutorError, ExecutorValidationError};
 use oci_spec::runtime::Spec;
 use rustix::fs::{OFlags, fcntl_setfl};
 use rustix::io::Errno;
@@ -10,6 +12,7 @@ use rustix::process::{Pid, Signal, WaitOptions, getpid, kill_process, set_child_
 use rustix::termios::{
     OptionalActions, Termios, Winsize, tcgetattr, tcgetwinsize, tcsetattr, tcsetwinsize,
 };
+use seacomb::Policy;
 use std::fs::File;
 use std::io::{IoSliceMut, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
@@ -310,10 +313,28 @@ fn discard_pipe() -> Result<OwnedFd> {
     Ok(writer)
 }
 
+// Starts the app the way youki would, under the seccomp filter. It is installed here, the last step
+// before the app replaces this process, so none of youki's own setup is filtered by it.
+#[derive(Clone)]
+struct FilteredExecutor(Policy);
+
+impl Executor for FilteredExecutor {
+    fn exec(&self, spec: &Spec) -> Result<(), ExecutorError> {
+        self.0
+            .install()
+            .map_err(|err| ExecutorError::Other(format!("installing the seccomp filter: {err}")))?;
+        DefaultExecutor {}.exec(spec)
+    }
+
+    fn validate(&self, spec: &Spec) -> Result<(), ExecutorValidationError> {
+        DefaultExecutor {}.validate(spec)
+    }
+}
+
 // With `tty` the container gets its own terminal, whose other end is copied to and from our stdin
 // and stdout. In localhost and localnet mode its loopback is bridged to the host's. Everything the
 // run created is deleted before returning.
-pub fn run(mut spec: Spec, tty: bool, network: &Network) -> Result<i32> {
+pub fn run(mut spec: Spec, seccomp: Policy, tty: bool, network: &Network) -> Result<i32> {
     let base = runtime_dir();
     let id = format!("climate-{}", store::unique_id());
     let bundle = base.join("bundles").join(&id);
@@ -348,7 +369,8 @@ pub fn run(mut spec: Spec, tty: bool, network: &Network) -> Result<i32> {
 
     let mut builder = ContainerBuilder::new(id.clone(), SyscallType::default())
         .with_root_path(&state_root)
-        .context("setting the container state path")?;
+        .context("setting the container state path")?
+        .with_executor(FilteredExecutor(seccomp));
     if let Some(console) = &console {
         builder = builder.with_console_socket(Some(console.path()));
     }
