@@ -16,10 +16,20 @@ on:
 ```sh
 sudo dnf install fuse-overlayfs      # Fedora
 sudo apt install fuse-overlayfs      # Debian, Ubuntu
+doas apk add fuse-overlayfs          # Alpine
 ```
 
 Containers are managed through your systemd user session, so one has to be running (it provides
-the `dbus` session bus under `$XDG_RUNTIME_DIR`). A normal desktop or `ssh` login has one.
+the `dbus` session bus under `$XDG_RUNTIME_DIR`). A normal desktop or `ssh` login has one. On a
+distro without systemd, build with `--no-default-features` instead; such a build ignores
+[resource limits](#resource-limits).
+
+Either way the cgroup v2 filesystem has to be mounted at `/sys/fs/cgroup`. systemd mounts it by
+default, but OpenRC (Alpine, Gentoo, ...) only does with its `cgroups` service enabled:
+
+```sh
+doas rc-update add cgroups boot && doas rc-service cgroups start
+```
 
 ## Install
 
@@ -332,7 +342,8 @@ at `memory` anyway.
 while something else wants the CPU, and youki rescales the number, so `512` does not mean half.
 
 The limits are applied to the container's systemd scope in your user session, which is what makes
-them work without root. Only `cpu`, `memory` and `pids` are delegated to a user session, so there
+them work without root. A build without the `systemd` feature has no such scope, so it ignores the
+limits with a warning. Only `cpu`, `memory` and `pids` are delegated to a user session, so there
 are no keys for CPU pinning or disk I/O.
 
 ## How it works

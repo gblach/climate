@@ -9,6 +9,10 @@ license = "GPL-3.0-or-later"
 keywords = ["cli", "container", "oci", "rootless", "sandbox"]
 categories = ["command-line-utilities", "virtualization"]
 
+[features]
+default = ["systemd"]
+systemd = ["libcontainer/systemd"]
+
 [dependencies]
 anyhow = "1"
 argp = "0.4"
@@ -19,7 +23,7 @@ grit-lib = { version = "0.5", features = ["http-ureq"] }
 indicatif = "0.18"
 ipstack = "1"
 libc = "0.2"
-libcontainer = { version = "0.7", default-features = false, features = ["systemd", "v2"] }
+libcontainer = { version = "0.7", default-features = false, features = ["v2"] }
 oci-client = { version = "0.17", default-features = false, features = ["rustls-tls"] }
 oci-spec = { version = "0.10", features = ["image", "runtime"] }
 rustix = { version = "1", features = [

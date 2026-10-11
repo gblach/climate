@@ -519,7 +519,14 @@ pub fn build(
             linux.set_namespaces(Some(namespaces));
         }
     }
-    linux.set_resources(resources(&cfg.limits)?);
+    let limits = resources(&cfg.limits)?;
+    #[cfg(feature = "systemd")]
+    linux.set_resources(limits);
+    // Without systemd the container gets no cgroup of its own to hold the limits.
+    #[cfg(not(feature = "systemd"))]
+    if limits.is_some() {
+        eprintln!("warning: [limits] ignored, as climate was built without the systemd feature");
+    }
     spec.set_linux(Some(linux));
 
     Ok(spec)

@@ -313,6 +313,18 @@ fn discard_pipe() -> Result<OwnedFd> {
     Ok(writer)
 }
 
+// youki cannot start a container without a cgroup v2 filesystem, and its own error does not say
+// what is missing. systemd mounts one by default; OpenRC only with its `cgroups` service.
+fn check_cgroup2() -> Result<()> {
+    if !Path::new("/sys/fs/cgroup/cgroup.controllers").exists() {
+        bail!(
+            "no cgroup v2 filesystem at /sys/fs/cgroup; on OpenRC enable it with \
+             `rc-update add cgroups boot && rc-service cgroups start` (as root)"
+        );
+    }
+    Ok(())
+}
+
 // Starts the app the way youki would, under the seccomp filter. It is installed here, the last step
 // before the app replaces this process, so none of youki's own setup is filtered by it.
 #[derive(Clone)]
@@ -335,6 +347,7 @@ impl Executor for FilteredExecutor {
 // and stdout. In localhost and localnet mode its loopback is bridged to the host's. Everything the
 // run created is deleted before returning.
 pub fn run(mut spec: Spec, seccomp: Policy, tty: bool, network: &Network) -> Result<i32> {
+    check_cgroup2()?;
     let base = runtime_dir();
     let id = format!("climate-{}", store::unique_id());
     let bundle = base.join("bundles").join(&id);
@@ -350,6 +363,12 @@ pub fn run(mut spec: Spec, seccomp: Policy, tty: bool, network: &Network) -> Res
     };
     if let Some(bridge) = &bridge {
         bridge.install_hook(&mut spec)?;
+    }
+    // An absolute cgroup path keeps youki away from systemd. A normal user cannot create this
+    // cgroup, so youki leaves the container in ours.
+    #[cfg(not(feature = "systemd"))]
+    if let Some(linux) = spec.linux_mut() {
+        linux.set_cgroups_path(Some(Path::new("/").join(&id)));
     }
     spec.save(bundle.join("config.json"))
         .context("writing the runtime spec")?;
@@ -384,7 +403,7 @@ pub fn run(mut spec: Spec, seccomp: Policy, tty: bool, network: &Network) -> Res
     }
     let mut container = builder
         .as_init(&bundle)
-        .with_systemd(true)
+        .with_systemd(cfg!(feature = "systemd"))
         .with_detach(console.is_some())
         .build()
         .context("creating the container")?;
