@@ -1,6 +1,6 @@
 [package]
 name = "climate"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "Run containerized CLI tools like they're installed natively, via a self-contained rootless engine"
 readme = "README.md"
@@ -24,7 +24,7 @@ indicatif = "0.18"
 ipstack = "1"
 libc = "0.2"
 libcontainer = { version = "0.7", default-features = false, features = ["v2"] }
-oci-client = { version = "0.17", default-features = false, features = ["rustls-tls"] }
+oci-client = { version = "0.18", default-features = false, features = ["rustls-tls"] }
 oci-spec = { version = "0.10", features = ["image", "runtime"] }
 rustix = { version = "1", features = [
     "event",
