@@ -55,5 +55,9 @@ tokio-util = { version = "0.7", features = ["io"] }
 toml = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[workspace]
+members = ["xtask"]
+
 [profile.release]
-lto = true
+lto = "thin"
+strip = "symbols"
