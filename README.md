@@ -16,7 +16,7 @@ on:
 ```sh
 sudo dnf install fuse-overlayfs      # Fedora
 sudo apt install fuse-overlayfs      # Debian, Ubuntu
-doas apk add fuse-overlayfs          # Alpine
+sudo pacman -S fuse-overlayfs        # Arch Linux
 ```
 
 Containers are managed through your systemd user session, so one has to be running (it provides
@@ -33,11 +33,15 @@ doas rc-update add cgroups boot && doas rc-service cgroups start
 
 ## Install
 
-Build the binary and put it on your `PATH`:
-
 ```sh
-cargo build --release
-cp target/release/climate ~/.local/bin/        # any directory on your PATH
+# From source
+cargo install climate
+
+# Prebuilt binary
+cargo binstall climate
+
+# From a clone of this repository
+cargo install --path .
 ```
 
 ## Sync the apps
