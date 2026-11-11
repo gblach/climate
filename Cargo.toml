@@ -29,6 +29,7 @@ oci-spec = { version = "0.10", features = ["image", "runtime"] }
 rustix = { version = "1", features = [
     "event",
     "fs",
+    "linux_5_11",
     "net",
     "pipe",
     "process",
